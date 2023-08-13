@@ -41,3 +41,85 @@ pub const EnumField = struct {
     value: u32,
     deleted: bool = false,
 };
+
+pub fn debug(self: DataType, id: DataType.ID, group_name: []const u8) void {
+    switch (self.kind) {
+        .unsigned => {
+            std.log.debug("{s}: Data Type {}: {s}: u{} RC:{} - {s}", .{
+                group_name,
+                id,
+                self.name,
+                self.size_bits,
+                self.ref_count,
+                self.description,
+            });
+        },
+        .@"array" => |info| {
+            std.log.debug("{s}: Data Type {}: {s}: [{}]({}) size:{} RC:{} - {s}", .{
+                group_name,
+                id,
+                self.name,
+                info.count,
+                info.data_type,
+                self.size_bits,
+                self.ref_count,
+                self.description,
+            });
+        },
+        .@"packed" => |fields| {
+            std.log.debug("{s}: Data Type {}: {s}: packed size:{} RC:{} - {s}", .{
+                group_name,
+                id,
+                self.name,
+                self.size_bits,
+                self.ref_count,
+                self.description,
+            });
+            for (fields.items) |field| {
+                const deleted = if (field.deleted) "DELETED " else "";
+                std.log.debug("{s} (dt {}): {s}: ({}) @{} {} {s}- {s}", .{
+                    group_name,
+                    id,
+                    field.name,
+                    field.data_type,
+                    field.offset_bits,
+                    field.default_value,
+                    deleted,
+                    field.description,
+                });
+            }
+         },
+        .@"enum" => |fields| {
+            std.log.debug("{s}: Data Type {}: {s}: enum size:{} RC:{} - {s}", .{
+                group_name,
+                id,
+                self.name,
+                self.size_bits,
+                self.ref_count,
+                self.description,
+            });
+            for (fields.items) |field| {
+                const deleted = if (field.deleted) "DELETED " else "";
+                std.log.debug("{s} (dt {}): {s} = {} {s}- {s}", .{
+                    group_name,
+                    id,
+                    field.name,
+                    field.value,
+                    deleted,
+                    field.description,
+                });
+            }
+        },
+        .external => |import| {
+            std.log.debug("{s}: Data Type {}: {s}: external({s}) size:{} RC:{} - {s}", .{
+                group_name,
+                id,
+                self.name,
+                import,
+                self.size_bits,
+                self.ref_count,
+                self.description,
+            });
+        },
+    }
+}

@@ -13,21 +13,6 @@ gpa: std.mem.Allocator,
 interrupts: std.ArrayListUnmanaged(Interrupt) = .{},
 groups: std.ArrayListUnmanaged(PeripheralGroup) = .{},
 
-pub fn sort(self: *Database) void {
-    std.sort.insertion(Interrupt, self.interrupts.items, {}, Interrupt.lessThan);
-    std.sort.insertion(PeripheralGroup, self.groups.items, {}, PeripheralGroup.lessThan);
-
-    for (self.groups.items) |*group| {
-        group.sort();
-    }
-}
-
-pub fn computeRefCounts(self: *Database) void {
-    for (self.groups.items) |*group| {
-        group.computeRefCounts();
-    }
-}
-
 pub fn getPeripheralGroup(self: *Database, group: PeripheralGroup) !*PeripheralGroup {
     for (self.groups.items) |*ptr| {
         if (std.mem.eql(u8, ptr.name, group.name)) {
@@ -175,4 +160,34 @@ pub fn createNvic(self: *Database) !void {
         .count = 1,
         .peripheral_type = peripheral_type_id,
     });
+}
+
+pub fn sort(self: *Database) void {
+    std.sort.insertion(Interrupt, self.interrupts.items, {}, Interrupt.lessThan);
+    std.sort.insertion(PeripheralGroup, self.groups.items, {}, PeripheralGroup.lessThan);
+
+    for (self.groups.items) |*group| {
+        group.sort();
+    }
+}
+
+pub fn computeRefCounts(self: *Database) void {
+    for (self.groups.items) |*group| {
+        group.computeRefCounts();
+    }
+}
+
+pub fn dedup(self: *Database) !void {
+    for (self.groups.items) |*group| {
+        try group.dedup(self.*);
+    }
+}
+
+pub fn debug(self: Database) void {
+    for (self.interrupts.items) |interrupt| {
+        std.log.debug("Interrupt {}: {s} - {s}", .{ interrupt.index, interrupt.name, interrupt.description });
+    }
+    for (self.groups.items) |group| {
+        group.debug();
+    }
 }

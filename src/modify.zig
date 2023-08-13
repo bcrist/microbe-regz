@@ -144,10 +144,12 @@ const RegisterFieldOp = enum {
     rename,
     delete,
     set_type,
+    set_description,
 };
 const register_field_ops = std.ComptimeStringMap(RegisterFieldOp, .{
     .{ "--", .nop },
     .{ "set-type", .set_type },
+    .{ "set-desc", .set_description },
     .{ "rename", .rename },
     .{ "delete", .delete },
 });
@@ -170,6 +172,7 @@ fn parseAndApplyRegisterField(
             .rename => try parseAndApplyRegisterFieldRename(db, group, peripheral_pattern, register_pattern, field_pattern, T, reader),
             .delete => try parseAndApplyRegisterFieldDelete(db, group, peripheral_pattern, register_pattern, field_pattern, T, reader),
             .set_type => try parseAndApplyRegisterFieldSetType(db, group, peripheral_pattern, register_pattern, field_pattern, T, reader),
+            .set_description => try parseAndApplyRegisterFieldSetDescription(db, group, peripheral_pattern, register_pattern, field_pattern, T, reader),
         }
         try reader.requireClose();
     }
@@ -243,6 +246,29 @@ fn parseAndApplyRegisterFieldSetType(
             group.data_types.items[copied_type].name,
         });
         field.data_type = copied_type;
+    }
+}
+
+fn parseAndApplyRegisterFieldSetDescription(
+    db: Database,
+    group: *PeripheralGroup,
+    peripheral_pattern: []const u8,
+    register_pattern: []const u8,
+    field_pattern: []const u8,
+    comptime T: type, reader: *sx.Reader(T)
+) !void {
+    const new_desc = try db.arena.dupe(u8, try reader.requireAnyString());
+
+    var iter = PackedFieldIterator.init(group, peripheral_pattern, register_pattern, field_pattern);
+    while (iter.next()) |field| {
+        std.log.debug("Setting register packed field description {s}.{s}.{s}.{s} to {s}", .{
+            group.name,
+            iter.register_iter.peripheral_iter.current().?.name,
+            iter.register_iter.current().?.name,
+            field.name,
+            new_desc,
+        });
+        field.description = new_desc;
     }
 }
 

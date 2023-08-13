@@ -40,9 +40,9 @@ pub fn main() !void {
 
     try db.createNvic();
 
-    // TODO: Consolidate duplicate types
-    db.computeRefCounts();
     db.sort();
+    try db.dedup();
+    db.computeRefCounts();
 
     var temp = std.ArrayList(u8).init(gpa.allocator());
     try generate.writeRegTypes(db, temp.writer());
