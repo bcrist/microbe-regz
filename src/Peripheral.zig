@@ -3,7 +3,7 @@ const PeripheralType = @import("PeripheralType.zig");
 const Peripheral = @This();
 
 name: []const u8,
-description: []const u8,
+description: []const u8 = "",
 offset_bytes: u64,
 count: u32,
 peripheral_type: PeripheralType.ID,

@@ -6,7 +6,7 @@ const DataType = @This();
 pub const ID = u32;
 
 name: []const u8,
-description: []const u8,
+description: []const u8 = "",
 size_bits: u32,
 kind: union(enum) {
     unsigned,
@@ -24,7 +24,7 @@ pub const ArrayInfo = struct {
 
 pub const PackedField = struct {
     name: []const u8,
-    description: []const u8,
+    description: []const u8 = "",
     offset_bits: u32,
     data_type: ID,
     default_value: u64,
@@ -37,7 +37,7 @@ pub const PackedField = struct {
 
 pub const EnumField = struct {
     name: []const u8,
-    description: []const u8,
+    description: []const u8 = "",
     value: u32,
     deleted: bool = false,
 };

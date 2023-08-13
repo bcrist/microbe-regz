@@ -7,7 +7,7 @@ const Register = @import("Register.zig");
 const PeripheralGroup = @This();
 
 name: []const u8,
-description: []const u8,
+description: []const u8 = "",
 separate_file: bool = true,
 peripherals: std.ArrayListUnmanaged(Peripheral) = .{},
 peripheral_types: std.ArrayListUnmanaged(PeripheralType) = .{},

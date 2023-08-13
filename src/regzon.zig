@@ -15,7 +15,6 @@ pub fn loadDatabase(temp: std.mem.Allocator, db: *Database, text: []const u8, ma
 
     var types_group = PeripheralGroup{
         .name = "",
-        .description = "",
         .separate_file = false,
     };
     defer types_group.deinit(db.*);
@@ -32,7 +31,6 @@ pub fn loadDatabase(temp: std.mem.Allocator, db: *Database, text: []const u8, ma
 
     var instances_group = try db.getPeripheralGroup(.{
         .name = "",
-        .description = "",
     });
 
     if (root.object.get("devices")) |devices_value| {
@@ -64,8 +62,6 @@ fn loadPeripheralType(
     name: []const u8,
     peripheral_json: json.ObjectMap,
 ) !void {
-    const maybe_description = try getStringFromObject(peripheral_json, "description");
-
     if (peripheral_json.get("size")) |_| {
         log.warn("Peripheral {s} has unhandled size attribute", .{ name });
     }
@@ -74,7 +70,6 @@ fn loadPeripheralType(
     const peripheral_type = try group.peripheral_types.addOne(db.gpa);
     peripheral_type.* = .{
         .name = try db.arena.dupe(u8, name),
-        .description = if (maybe_description) |desc| try db.arena.dupe(u8, desc) else "",
     };
 
     if (peripheral_json.get("children")) |peripheral_children_value| {
@@ -100,7 +95,6 @@ fn loadPeripheralType(
 
     try group.peripherals.append(db.gpa, .{
         .name = peripheral_type.name,
-        .description = "",
         .offset_bytes = 0,
         .count = 0,
         .peripheral_type = peripheral_type_id,
@@ -115,7 +109,6 @@ fn loadRegisters(
 ) !void {
     for (registers.keys(), registers.values()) |name, register_value| {
         const register = try getObject(register_value);
-        const maybe_description = try getStringFromObject(register, "description");
         const size_bits = (try getIntegerFromObject(register, u32, "size")) orelse return error.NoRegisterSize;
         const maybe_count = try getIntegerFromObject(register, u32, "count");
         const maybe_offset = try getIntegerFromObject(register, u32, "offset");
@@ -143,7 +136,6 @@ fn loadRegisters(
 
         try peripheral_type.registers.append(db.gpa, .{
             .name = try db.arena.dupe(u8, name),
-            .description = if (maybe_description) |desc| try db.arena.dupe(u8, desc) else "",
             .offset_bytes = maybe_offset orelse 0,
             .reset_value = maybe_reset_value orelse 0,
             .reset_mask = maybe_reset_mask orelse 0,
@@ -166,7 +158,6 @@ fn loadPackedDataType(
 
     for (fields.keys(), fields.values()) |name, field_value| {
         const field = try getObject(field_value);
-        const maybe_description = try getStringFromObject(field, "description");
         const offset_bits = (try getIntegerFromObject(field, u32, "offset")) orelse 0;
         const size_bits = (try getIntegerFromObject(field, u32, "size")) orelse return error.NoFieldSize;
         if (field.get("count")) |_| {
@@ -180,7 +171,6 @@ fn loadPackedDataType(
                 const id: DataType.ID = @intCast(group.data_types.items.len);
                 try group.data_types.append(db.gpa, .{
                     .name = try db.arena.dupe(u8, name),
-                    .description = if (maybe_description) |desc| try db.arena.dupe(u8, desc) else "",
                     .size_bits = size_bits,
                     .kind = .unsigned,
                 });
@@ -202,7 +192,6 @@ fn loadPackedDataType(
 
         try packed_fields.append(db.gpa, .{
             .name = try db.arena.dupe(u8, name),
-            .description = if (maybe_description) |desc| try db.arena.dupe(u8, desc) else "",
             .offset_bits = offset_bits,
             .data_type = data_type,
             .default_value = default_value,
@@ -212,7 +201,6 @@ fn loadPackedDataType(
     const type_id: DataType.ID = @intCast(group.data_types.items.len);
     try group.data_types.append(db.gpa, .{
         .name = "",
-        .description = "",
         .size_bits = register_size_bits,
         .kind = .{ .@"packed" = packed_fields },
     });
@@ -225,10 +213,9 @@ fn loadEnumDataType(
     field_size_bits: u32,
     enum_value: std.json.ObjectMap
 ) !DataType.ID {
-    const maybe_description = try getStringFromObject(enum_value, "description");
     const size_bits = (try getIntegerFromObject(enum_value, u32, "size")) orelse field_size_bits;
 
-    const type_id = try group.createEnumType(db, "", maybe_description, size_bits, &.{});
+    const type_id = try group.createEnumType(db, "", null, size_bits, &.{});
     var enum_fields = &group.data_types.items[type_id].kind.@"enum";
 
     if (enum_value.get("children")) |children_value| {
@@ -238,11 +225,9 @@ fn loadEnumDataType(
             for (fields.keys(), fields.values(), 0..) |name, enum_field_value, i| {
                 _ = i;
                 const enum_field = try getObject(enum_field_value);
-                const maybe_enum_field_description = try getStringFromObject(enum_field, "description");
                 const value = (try getIntegerFromObject(enum_field, u32, "value")) orelse return error.NoEnumValue;
                 try enum_fields.append(db.gpa, .{
                     .name = try db.arena.dupe(u8, name),
-                    .description = if (maybe_enum_field_description) |desc| try db.arena.dupe(u8, desc) else "",
                     .value = value,
                 });
             }
@@ -255,12 +240,10 @@ fn loadEnumDataType(
 fn loadInterrupts(db: *Database, interrupts: json.ObjectMap) !void {
     for (interrupts.keys(), interrupts.values()) |name, interrupt_value| {
         const interrupt = try getObject(interrupt_value);
-        const maybe_description = try getStringFromObject(interrupt, "description");
         const index = (try getIntegerFromObject(interrupt, i32, "index")) orelse return error.MissingInterruptIndex;
 
         try db.interrupts.append(db.gpa, .{
             .name = try db.arena.dupe(u8, name),
-            .description = if (maybe_description) |desc| try db.arena.dupe(u8, desc) else "",
             .index = index,
         });
     }
@@ -269,7 +252,6 @@ fn loadInterrupts(db: *Database, interrupts: json.ObjectMap) !void {
 fn loadPeripheralInstances(db: Database, types: PeripheralGroup, group: *PeripheralGroup, instances: std.json.ObjectMap) !void {
     for (instances.keys(), instances.values()) |name, instance_value| {
         const instance = try getObject(instance_value);
-        const maybe_description = try getStringFromObject(instance, "description");
         const offset_bytes = try getIntegerFromObject(instance, u32, "offset") orelse 0;
         const count = try getIntegerFromObject(instance, u32, "count") orelse 1;
 
@@ -280,8 +262,7 @@ fn loadPeripheralInstances(db: Database, types: PeripheralGroup, group: *Periphe
             for (types.peripherals.items) |p| {
                 if (std.mem.eql(u8, peripheral_name, p.name)) {
                     const safe_name = try db.arena.dupe(u8, name);
-                    const safe_description = if (maybe_description) |desc| try db.arena.dupe(u8, desc) else "";
-                    try group.copyPeripheral(db, types, p, safe_name, safe_description, offset_bytes, count);
+                    try group.copyPeripheral(db, types, p, safe_name, "", offset_bytes, count);
                     break;
                 }
             } else {

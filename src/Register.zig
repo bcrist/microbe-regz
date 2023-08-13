@@ -3,7 +3,7 @@ const DataType = @import("DataType.zig");
 const Register = @This();
 
 name: []const u8,
-description: []const u8,
+description: []const u8 = "",
 offset_bytes: u32,
 reset_value: u64,
 reset_mask: u64,
