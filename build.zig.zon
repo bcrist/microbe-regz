@@ -1,0 +1,10 @@
+.{
+    .name = "microbe-rpi",
+    .version = "0.0.0",
+    .dependencies = .{
+        .@"Zig-SX" = .{
+            .url = "https://github.com/bcrist/Zig-SX/archive/5d5e1e8daf1fd51fefe2447dc61790393e0aefdd.tar.gz",
+            .hash = "12205908d4c18d75a5f9bc8bbf5e2d38155aa2f76f03f94439f9f4e91af471c725f4",
+        },
+    },
+}
