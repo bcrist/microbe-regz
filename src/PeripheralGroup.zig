@@ -416,7 +416,7 @@ const DedupPeripheralTypeContext = struct {
     pub fn hash(_: DedupPeripheralTypeContext, a: PeripheralType) u64 {
         var h = std.hash.Wyhash.init(0);
         // h.update(a.name);
-        // h.update(a.description);
+        h.update(a.description);
 
         for (a.registers.items) |reg| {
             h.update(reg.name);
@@ -434,7 +434,7 @@ const DedupPeripheralTypeContext = struct {
     }
     pub fn eql(_: DedupPeripheralTypeContext, a: PeripheralType, b: PeripheralType) bool {
         // if (!std.mem.eql(u8, a.name, b.name)) return false;
-        // if (!std.mem.eql(u8, a.description, b.description)) return false;
+        if (!std.mem.eql(u8, a.description, b.description)) return false;
 
         if (a.registers.items.len != b.registers.items.len) return false;
         for (a.registers.items, b.registers.items) |ar, br| {
@@ -500,14 +500,34 @@ pub fn dedup(self: *PeripheralGroup, db: Database) !void {
 
         for (peripheral_type.registers.items) |*register| {
             if (data_types_remap.get(register.data_type)) |dt| {
-                std.log.debug("Deduplicating register type {} -> {}", .{ register.data_type, dt });
+                std.log.debug("Deduplicating register {s}.{s}.{s} type {} -> {}", .{
+                    self.name,
+                    peripheral_type.name,
+                    register.name,
+                    register.data_type,
+                    dt
+                });
                 register.data_type = dt;
             }
         }
 
         var result = try peripheral_types.getOrPut(peripheral_type);
         if (result.found_existing) {
-            try peripheral_types_remap.put(id, result.value_ptr.*);
+            const existing_id = result.value_ptr.*;
+            try peripheral_types_remap.put(id, existing_id);
+
+            const existing = &self.peripheral_types.items[existing_id];
+
+            if (!std.mem.eql(u8, existing.name, peripheral_type.name)) {
+                var n: usize = 1;
+                while (n < existing.name.len) : (n += 1) {
+                    const new_name = existing.name[0 .. existing.name.len - n];
+                    if (std.mem.startsWith(u8, peripheral_type.name, new_name)) {
+                        existing.name = new_name;
+                        break;
+                    }
+                }
+            }
         } else {
             result.value_ptr.* = id;
         }
