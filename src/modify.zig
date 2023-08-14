@@ -72,6 +72,7 @@ pub fn parseAndApplySx(db: *Database, comptime T: type, reader: *sx.Reader(T)) !
 
 const PeripheralOp = enum {
     nop,
+    rename,
     register,
     move_to_group,
     set_typename,
@@ -79,6 +80,7 @@ const PeripheralOp = enum {
 };
 const peripheral_ops = std.ComptimeStringMap(PeripheralOp, .{
     .{ "--", .nop },
+    .{ "rename", .rename },
     .{ "reg", .register },
     .{ "move-to-group", .move_to_group },
     .{ "set-typename", .set_typename },
@@ -98,6 +100,7 @@ fn parseAndApplyPeripheral(db: *Database, original_group: *PeripheralGroup, comp
             },
             .register => try parseAndApplyRegister(db.*, group, peripheral_pattern, T, reader),
             .move_to_group => group = try parseAndApplyMoveToGroup(db, group.name, peripheral_pattern, T, reader),
+            .rename => try parseAndApplyPeripheralRename(db.*, group, peripheral_pattern, T, reader),
             .set_typename => try parseAndApplyPeripheralSetTypename(db.*, group, peripheral_pattern, T, reader),
             .delete => try parseAndApplyPeripheralDelete(db.*, group, peripheral_pattern, T, reader),
         }
@@ -120,6 +123,25 @@ fn parseAndApplyPeripheralDelete(
             peripheral.name,
         });
         peripheral.deleted = true;
+    }
+}
+
+fn parseAndApplyPeripheralRename(
+    db: Database,
+    group: *PeripheralGroup,
+    peripheral_pattern: []const u8,
+    comptime T: type, reader: *sx.Reader(T)
+) !void {
+    const new_name = try db.arena.dupe(u8, try reader.requireAnyString());
+
+    var iter = PeripheralIterator.init(group, peripheral_pattern);
+    while (iter.next()) |peripheral| {
+        std.log.debug("Renaming peripheral {s}.{s} => {s}", .{
+            group.name,
+            peripheral.name,
+            new_name,
+        });
+        peripheral.name = new_name;
     }
 }
 
@@ -630,8 +652,17 @@ fn parseCreateRegister(db: Database, group: *PeripheralGroup, default_offset_byt
 
 
 fn nameMatchesPattern(name: []const u8, pattern: []const u8) bool {
-    if (std.mem.endsWith(u8, pattern, "*")) {
-        return std.mem.startsWith(u8, name, pattern[0 .. pattern.len - 1]);
+    if (std.mem.indexOfScalar(u8, pattern, '#')) |first_num| {
+        if (!std.mem.startsWith(u8, name, pattern[0..first_num])) return false;
+        var cropped_name = name[first_num..];
+        while (cropped_name.len > 0 and std.ascii.isDigit(cropped_name[0])) {
+            cropped_name = cropped_name[1..];
+        }
+        const cropped_pattern = pattern[first_num + 1 ..];
+        return nameMatchesPattern(cropped_name, cropped_pattern);
+    } else if (std.mem.indexOfScalar(u8, pattern, '*')) |first_star| {
+        if (!std.mem.startsWith(u8, name, pattern[0..first_star])) return false;
+        return std.mem.endsWith(u8, name, pattern[first_star + 1 ..]);
     } else {
         return std.mem.eql(u8, name, pattern);
     }
