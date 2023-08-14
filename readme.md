@@ -5,7 +5,7 @@ This project takes a JSON output file from [regz](/ZigEmbeddedGroup/regz) and ge
 Note only Arm SVD files are currently supported.
 
 ## Usage
-1. Move to the device directory (should contain `device.svd` and a `reg_types` subdirectory)
+1. Move to the device directory (should contain `device.svd`, `device.sx`, and `reg_types` subdirectory)
 2. Run `regz device.svd -j -o device.json`
 3. Run `microbe-regz`
 

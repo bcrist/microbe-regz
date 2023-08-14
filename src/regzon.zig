@@ -124,7 +124,7 @@ fn loadRegisters(
         if (register.get("children")) |children_value| {
             const children = try getObject(children_value);
             if (children.get("fields")) |fields| {
-                maybe_data_type = try loadPackedDataType(db, group, size_bits, default_value, try getObject(fields));
+                maybe_data_type = try loadPackedDataType(db, group, name, size_bits, default_value, try getObject(fields));
             }
         }
 
@@ -150,6 +150,7 @@ fn loadRegisters(
 fn loadPackedDataType(
     db: Database,
     group: *PeripheralGroup,
+    register_name: []const u8,
     register_size_bits: u32,
     register_default_value: u64,
     fields: json.ObjectMap
@@ -200,7 +201,7 @@ fn loadPackedDataType(
 
     const type_id: DataType.ID = @intCast(group.data_types.items.len);
     try group.data_types.append(db.gpa, .{
-        .name = "",
+        .name = try db.arena.dupe(u8, register_name),
         .size_bits = register_size_bits,
         .kind = .{ .@"packed" = packed_fields },
     });

@@ -27,13 +27,15 @@ pub fn parseAndApplySx(db: *Database, comptime T: type, reader: *sx.Reader(T)) !
     }
 
     while (try reader.expression("group")) {
-        const group_name = try reader.requireAnyString();
+        var group_name = try reader.requireAnyString();
 
-        const group = try db.getPeripheralGroup(.{
+        var group = try db.getPeripheralGroup(.{
             .name = group_name,
             .description = "",
             .separate_file = true,
         });
+
+        group_name = group.name;
 
         while (try reader.open()) {
             switch (try reader.requireMapEnum(GroupOp, group_ops)) {
@@ -41,7 +43,16 @@ pub fn parseAndApplySx(db: *Database, comptime T: type, reader: *sx.Reader(T)) !
                     try reader.ignoreRemainingExpression();
                     continue;
                 },
-                .peripheral => try parseAndApplyPeripheral(db, group, T, reader),
+                .peripheral => {
+                    try parseAndApplyPeripheral(db, group, T, reader);
+                    // move-to-group may have caused db.groups to be resized,
+                    // so we need to make sure our group pointer is updated:
+                    group = try db.getPeripheralGroup(.{
+                        .name = group_name,
+                        .description = "",
+                        .separate_file = true,
+                    });
+                },
                 .create_enum => try parseAndApplyCreateEnum(db.*, group, T, reader),
                 .create_packed => try parseAndApplyCreatePacked(db.*, group, T, reader),
                 .create_peripheral => try parseAndApplyCreatePeripheral(db.*, group, T, reader),
@@ -63,11 +74,15 @@ const PeripheralOp = enum {
     nop,
     register,
     move_to_group,
+    set_typename,
+    delete,
 };
 const peripheral_ops = std.ComptimeStringMap(PeripheralOp, .{
     .{ "--", .nop },
     .{ "reg", .register },
     .{ "move-to-group", .move_to_group },
+    .{ "set-typename", .set_typename },
+    .{ "delete", .delete },
 });
 fn parseAndApplyPeripheral(db: *Database, original_group: *PeripheralGroup, comptime T: type, reader: *sx.Reader(T)) !void {
     const peripheral_pattern = try db.gpa.dupe(u8, try reader.requireAnyString());
@@ -82,9 +97,49 @@ fn parseAndApplyPeripheral(db: *Database, original_group: *PeripheralGroup, comp
                 continue;
             },
             .register => try parseAndApplyRegister(db.*, group, peripheral_pattern, T, reader),
-            .move_to_group => group = try parseAndApplyMoveToGroup(db, group, peripheral_pattern, T, reader),
+            .move_to_group => group = try parseAndApplyMoveToGroup(db, group.name, peripheral_pattern, T, reader),
+            .set_typename => try parseAndApplyPeripheralSetTypename(db.*, group, peripheral_pattern, T, reader),
+            .delete => try parseAndApplyPeripheralDelete(db.*, group, peripheral_pattern, T, reader),
         }
         try reader.requireClose();
+    }
+}
+
+fn parseAndApplyPeripheralDelete(
+    db: Database,
+    group: *PeripheralGroup,
+    peripheral_pattern: []const u8,
+    comptime T: type, reader: *sx.Reader(T)
+) !void {
+    _ = reader;
+    _ = db;
+    var iter = PeripheralIterator.init(group, peripheral_pattern);
+    while (iter.next()) |peripheral| {
+        std.log.debug("Deleting peripheral {s}.{s}", .{
+            group.name,
+            peripheral.name,
+        });
+        peripheral.deleted = true;
+    }
+}
+
+fn parseAndApplyPeripheralSetTypename(
+    db: Database,
+    group: *PeripheralGroup,
+    peripheral_pattern: []const u8,
+    comptime T: type, reader: *sx.Reader(T)
+) !void {
+    const new_name = try db.arena.dupe(u8, try reader.requireAnyString());
+
+    var iter = PeripheralIterator.init(group, peripheral_pattern);
+    while (iter.next()) |peripheral| {
+        std.log.debug("Setting peripheral typename for {s}.{s}: {s} => {s}", .{
+            group.name,
+            iter.current().?.name,
+            group.peripheral_types.items[peripheral.peripheral_type].name,
+            new_name,
+        });
+        group.peripheral_types.items[peripheral.peripheral_type].name = new_name;
     }
 }
 
@@ -115,10 +170,12 @@ fn parseAndApplyRegister(db: Database, group: *PeripheralGroup, peripheral_patte
 const RegisterTypeOp = enum {
     nop,
     field,
+    rename,
 };
 const register_type_ops = std.ComptimeStringMap(RegisterTypeOp, .{
     .{ "--", .nop },
     .{ "field", .field },
+    .{ "rename", .rename },
 });
 fn parseAndApplyRegisterType(
     db: Database,
@@ -134,10 +191,34 @@ fn parseAndApplyRegisterType(
                 continue;
             },
             .field => try parseAndApplyRegisterField(db, group, peripheral_pattern, register_pattern, T, reader),
+            .rename => try parseAndApplyRegisterTypeRename(db, group, peripheral_pattern, register_pattern, T, reader),
         }
         try reader.requireClose();
     }
 }
+
+fn parseAndApplyRegisterTypeRename(
+    db: Database,
+    group: *PeripheralGroup,
+    peripheral_pattern: []const u8,
+    register_pattern: []const u8,
+    comptime T: type, reader: *sx.Reader(T)
+) !void {
+    const new_name = try db.arena.dupe(u8, try reader.requireAnyString());
+
+    var iter = RegisterIterator.init(group, peripheral_pattern, register_pattern);
+    while (iter.next()) |reg| {
+        std.log.debug("Renaming register type {s}.{s}.{s}: {s} => {s}", .{
+            group.name,
+            iter.peripheral_iter.current().?.name,
+            iter.current().?.name,
+            group.data_types.items[reg.data_type].name,
+            new_name,
+        });
+        group.data_types.items[reg.data_type].name = new_name;
+    }
+}
+
 
 const RegisterFieldOp = enum {
     nop,
@@ -273,7 +354,7 @@ fn parseAndApplyRegisterFieldSetDescription(
 }
 
 // Note any ops in the peripheral after the move-to-group will use the new group as context, so we need to return it.
-fn parseAndApplyMoveToGroup(db: *Database, group: *PeripheralGroup, peripheral_pattern: []const u8, comptime T:type, reader: *sx.Reader(T)) !*PeripheralGroup {
+fn parseAndApplyMoveToGroup(db: *Database, src_group_name: []const u8, peripheral_pattern: []const u8, comptime T:type, reader: *sx.Reader(T)) !*PeripheralGroup {
     const dest_group_name = try reader.requireAnyString();
 
     var new_group = try db.getPeripheralGroup(.{
@@ -282,18 +363,24 @@ fn parseAndApplyMoveToGroup(db: *Database, group: *PeripheralGroup, peripheral_p
         .separate_file = true,
     });
 
-    if (new_group != group) {
+    var old_group = try db.getPeripheralGroup(.{
+        .name = src_group_name,
+        .description = "",
+        .separate_file = true,
+    });
+
+    if (new_group != old_group) {
         var iter = PeripheralIterator {
             .pattern = peripheral_pattern,
-            .group = group,
+            .group = old_group,
         };
         while (iter.next()) |peripheral| {
             std.log.debug("Moving peripheral {s}.{s} to group {s}", .{
-                group.name,
+                old_group.name,
                 peripheral.name,
                 new_group.name,
             });
-            try new_group.copyPeripheral(db.*, group.*, peripheral.*,
+            try new_group.copyPeripheral(db.*, old_group.*, peripheral.*,
                 peripheral.name,
                 peripheral.description,
                 peripheral.offset_bytes,
