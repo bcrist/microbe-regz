@@ -168,10 +168,12 @@ fn parseAndApplyPeripheralSetTypename(
 const RegisterOp = enum {
     nop,
     type,
+    rename,
 };
 const register_ops = std.ComptimeStringMap(RegisterOp, .{
     .{ "--", .nop },
     .{ "type", .type },
+    .{ "rename", .rename },
 });
 fn parseAndApplyRegister(db: Database, group: *PeripheralGroup, peripheral_pattern: []const u8, comptime T: type, reader: *sx.Reader(T)) !void {
     const register_pattern = try db.gpa.dupe(u8, try reader.requireAnyString());
@@ -184,8 +186,30 @@ fn parseAndApplyRegister(db: Database, group: *PeripheralGroup, peripheral_patte
                 continue;
             },
             .type => try parseAndApplyRegisterType(db, group, peripheral_pattern, register_pattern, T, reader),
+            .rename => try parseAndApplyRegisterRename(db, group, peripheral_pattern, register_pattern, T, reader),
         }
         try reader.requireClose();
+    }
+}
+
+fn parseAndApplyRegisterRename(
+    db: Database,
+    group: *PeripheralGroup,
+    peripheral_pattern: []const u8,
+    register_pattern: []const u8,
+    comptime T: type, reader: *sx.Reader(T)
+) !void {
+    const new_name = try db.arena.dupe(u8, try reader.requireAnyString());
+
+    var iter = RegisterIterator.init(group, peripheral_pattern, register_pattern);
+    while (iter.next()) |reg| {
+        std.log.debug("Renaming register {s}.{s}.{s} => {s}", .{
+            group.name,
+            iter.peripheral_iter.current().?.name,
+            reg.name,
+            new_name,
+        });
+        reg.name = new_name;
     }
 }
 
