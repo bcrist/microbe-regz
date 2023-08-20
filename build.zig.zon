@@ -3,8 +3,8 @@
     .version = "0.0.0",
     .dependencies = .{
         .@"Zig-SX" = .{
-            .url = "https://github.com/bcrist/Zig-SX/archive/5d5e1e8daf1fd51fefe2447dc61790393e0aefdd.tar.gz",
-            .hash = "12205908d4c18d75a5f9bc8bbf5e2d38155aa2f76f03f94439f9f4e91af471c725f4",
+            .url = "https://github.com/bcrist/Zig-SX/archive/0198004c271f95efb93ec5a75d9fa6d50f17a75d.tar.gz",
+            .hash = "1220257e39632182a45cc15f5280b19f904f342a3f11675206dc1794c0ca0a85ee6d",
         },
     },
 }

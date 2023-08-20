@@ -1,12 +1,11 @@
 const std = @import("std");
-const PeripheralType = @import("PeripheralType.zig");
+const DataType = @import("DataType.zig");
 const Peripheral = @This();
 
 name: []const u8,
 description: []const u8 = "",
-offset_bytes: u64,
-count: u32,
-peripheral_type: PeripheralType.ID,
+base_address: u64,
+data_type: DataType.ID,
 deleted: bool = false,
 
 pub fn lessThan(_: void, a: Peripheral, b: Peripheral) bool {

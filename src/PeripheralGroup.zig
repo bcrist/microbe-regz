@@ -1,609 +1,302 @@
 const std = @import("std");
-const Database = @import("Database.zig");
 const DataType = @import("DataType.zig");
 const Peripheral = @import("Peripheral.zig");
-const PeripheralType = @import("PeripheralType.zig");
-const Register = @import("Register.zig");
 const PeripheralGroup = @This();
 
+const load_factor = std.hash_map.default_max_load_percentage;
+
+arena: std.mem.Allocator,
+gpa: std.mem.Allocator,
 name: []const u8,
 description: []const u8 = "",
 separate_file: bool = true,
 peripherals: std.ArrayListUnmanaged(Peripheral) = .{},
-peripheral_types: std.ArrayListUnmanaged(PeripheralType) = .{},
 data_types: std.ArrayListUnmanaged(DataType) = .{},
+data_type_dedup: std.HashMapUnmanaged(DataType, DataType.ID, DataType.DedupContext, load_factor) = .{},
+data_type_lookup: std.StringHashMapUnmanaged(DataType.ID) = .{},
 
-unsigned_types: std.AutoHashMapUnmanaged(u32, DataType.ID) = .{},
-array_types: std.AutoHashMapUnmanaged(DataType.ArrayInfo, DataType.ID) = .{},
-
-pub fn deinit(self: *PeripheralGroup, db: Database) void {
-    for (self.data_types.items) |*t| {
-        switch (t.kind) {
-            .@"packed" => |*a| a.deinit(db.gpa),
-            .@"enum" => |*a| a.deinit(db.gpa),
-            else => {},
-        }
-    }
-    for (self.peripheral_types.items) |*t| {
-        t.registers.deinit(db.gpa);
-    }
-    self.peripherals.deinit(db.gpa);
-    self.peripheral_types.deinit(db.gpa);
-    self.data_types.deinit(db.gpa);
-    self.unsigned_types.deinit(db.gpa);
-    self.array_types.deinit(db.gpa);
+pub fn deinit(self: *PeripheralGroup) void {
+    self.peripherals.deinit(self.gpa);
+    self.data_types.deinit(self.gpa);
+    self.data_type_dedup.deinit(self.gpa);
+    self.data_type_lookup.deinit(self.gpa);
 }
 
-pub fn copyType(
+pub fn createPeripheral(
     self: *PeripheralGroup,
-    db: Database,
-    src_group: PeripheralGroup,
-    src_id: DataType.ID,
-) !DataType.ID {
-    var data_type = src_group.data_types.items[src_id];
+    name: []const u8,
+    base_address: u64,
+    data_type: DataType.ID,
+) !*Peripheral {
+    try self.peripherals.append(self.gpa, .{
+        .name = name,
+        .base_address = base_address,
+        .data_type = data_type,
+    });
+    return &self.peripherals.items[self.peripherals.items.len - 1];
+}
 
-    data_type.kind = switch (data_type.kind) {
-        .unsigned => blk: {
-            if (data_type.name.len == 0 and data_type.description.len == 0) {
-                return self.getUnsignedType(db, data_type.size_bits);
-            }
-            break :blk .unsigned;
-        },
-        .@"array" => |info| blk: {
-            const inner_type = try self.copyType(db, src_group, info.data_type);
-            if (data_type.name.len == 0 and data_type.description.len == 0) {
-                return self.getArrayType(db, inner_type, info.count);
-            }
-            break :blk .{ .@"array" = .{
+pub fn clonePeripheral(
+    self: *PeripheralGroup,
+    src_group: *const PeripheralGroup,
+    src: Peripheral,
+) !*Peripheral {
+    try self.peripherals.append(self.gpa, .{
+        .name = src.name,
+        .description = src.description,
+        .base_address = src.base_address,
+        .data_type = try self.getOrCreateType(src_group.data_types.items[src.data_type], .{
+            .dupe_strings = false,
+            .src_group = src_group,
+        }),
+        .deleted = src.deleted,
+    });
+    return &self.peripherals.items[self.peripherals.items.len - 1];
+}
+
+pub const GetOrCreateTypeOptions = struct {
+    dupe_strings: bool = true,
+    src_group: ?*const PeripheralGroup = null,
+};
+pub fn getOrCreateType(self: *PeripheralGroup, dt: DataType, options: GetOrCreateTypeOptions) !DataType.ID {
+    const key = DataType.WithPeripheralGroup{
+        .group = options.src_group orelse self,
+        .data_type = &dt,
+    };
+
+    if (self.data_type_dedup.getAdapted(key, DataType.AdaptedDedupContext{ .group = self })) |id| {
+        if (dt.fallback_name.len > 0) {
+            const existing_dt = &self.data_types.items[id];
+            existing_dt.fallback_name = try self.updateFallbackName(existing_dt.fallback_name, dt.fallback_name, options.dupe_strings);
+        }
+        return id;
+    }
+
+    if (dt.name.len > 0) {
+        if (self.data_type_lookup.get(dt.name)) |_| {
+            std.log.err("Type '{s}' already exists!", .{ std.fmt.fmtSliceEscapeLower(dt.name) });
+            return error.NamedTypeCollision;
+        }
+    }
+
+    var copy = dt;
+
+    if (options.dupe_strings) {
+        copy.name = try self.maybeDupe(copy.name);
+        copy.fallback_name = try self.maybeDupe(copy.fallback_name);
+        copy.description = try self.maybeDupe(copy.description);
+    }
+
+    copy.kind = switch (dt.kind) {
+        .unsigned, .boolean => dt.kind,
+        .external => |info| .{ .external = .{
+            .import = if (options.dupe_strings) try self.maybeDupe(info.import) else info.import,
+        }},
+        .register => |info| .{ .register = .{
+            .data_type = try self.getOrCreateType(key.group.data_types.items[info.data_type], .{
+                .dupe_strings = false,
+                .src_group = key.group,
+            }),
+            .access = info.access,
+        }},
+        .collection => |info| blk: {
+            break :blk .{ .collection = .{
                 .count = info.count,
-                .data_type = inner_type,
+                .data_type = try self.getOrCreateType(key.group.data_types.items[info.data_type], .{
+                    .dupe_strings = false,
+                    .src_group = key.group,
+                }),
             }};
         },
-        .@"packed" => |src_fields| blk: {
-            var fields = try std.ArrayList(DataType.PackedField).initCapacity(db.gpa, src_fields.items.len);
-            for (src_fields.items) |field| {
-                fields.appendAssumeCapacity(.{
-                    .name = field.name,
-                    .description = field.description,
-                    .offset_bits = field.offset_bits,
-                    .data_type = try self.copyType(db, src_group, field.data_type),
+        .alternative => |src_fields| blk: {
+            var fields = try self.arena.alloc(DataType.UnionField, src_fields.len);
+            for (src_fields, fields) |field, *dest| {
+                dest.* = .{
+                    .name = if (options.dupe_strings) try self.maybeDupe(field.name) else field.name,
+                    .description = if (options.dupe_strings) try self.maybeDupe(field.description) else field.description,
+                    .data_type = try self.getOrCreateType(key.group.data_types.items[field.data_type], .{
+                        .dupe_strings = false,
+                        .src_group = key.group,
+                    }),
+                };
+            }
+            break :blk .{ .alternative = fields };
+        },
+        .structure => |src_fields| blk: {
+            var fields = try self.arena.alloc(DataType.StructField, src_fields.len);
+            for (src_fields, fields) |field, *dest| {
+                dest.* = .{
+                    .name = if (options.dupe_strings) try self.maybeDupe(field.name) else field.name,
+                    .description = if (options.dupe_strings) try self.maybeDupe(field.description) else field.description,
+                    .data_type = try self.getOrCreateType(key.group.data_types.items[field.data_type], .{
+                        .dupe_strings = false,
+                        .src_group = key.group,
+                    }),
+                    .offset_bytes = field.offset_bytes,
                     .default_value = field.default_value,
-                });
+                };
             }
-            break :blk .{ .@"packed" = fields.moveToUnmanaged() };
+            std.sort.insertion(DataType.StructField, fields, {}, DataType.StructField.lessThan);
+            break :blk .{ .structure = fields };
         },
-        .@"enum" => |src_fields| blk: {
-            var fields = try std.ArrayList(DataType.EnumField).initCapacity(db.gpa, src_fields.items.len);
-            for (src_fields.items) |field| {
-                fields.appendAssumeCapacity(.{
-                    .name = field.name,
-                    .description = field.description,
+        .bitpack => |src_fields| blk: {
+            var fields = try self.arena.alloc(DataType.PackedField, src_fields.len);
+            for (src_fields, fields) |field, *dest| {
+                dest.* = .{
+                    .name = if (options.dupe_strings) try self.maybeDupe(field.name) else field.name,
+                    .description = if (options.dupe_strings) try self.maybeDupe(field.description) else field.description,
+                    .data_type = try self.getOrCreateType(key.group.data_types.items[field.data_type], .{
+                        .dupe_strings = false,
+                        .src_group = key.group,
+                    }),
+                    .offset_bits = field.offset_bits,
+                    .default_value = field.default_value,
+                };
+            }
+            std.sort.insertion(DataType.PackedField, fields, {}, DataType.PackedField.lessThan);
+            break :blk .{ .bitpack = fields };
+        },
+        .enumeration => |src_fields| blk: {
+            var fields = try self.arena.alloc(DataType.EnumField, src_fields.len);
+            for (src_fields, fields) |field, *dest| {
+                dest.* = .{
+                    .name = if (options.dupe_strings) try self.maybeDupe(field.name) else field.name,
+                    .description = if (options.dupe_strings) try self.maybeDupe(field.description) else field.description,
                     .value = field.value,
-                });
+                };
             }
-            break :blk .{ .@"enum" = fields.moveToUnmanaged() };
+            std.sort.insertion(DataType.EnumField, fields, {}, DataType.EnumField.lessThan);
+            break :blk .{ .enumeration = fields };
         },
-        .external => |import_name| .{ .external = import_name },
     };
 
     const id: DataType.ID = @intCast(self.data_types.items.len);
-    try self.data_types.append(db.gpa, data_type);
-    return id;
-}
-
-pub fn copyPeripheral(
-    self: *PeripheralGroup,
-    db: Database,
-    src_group: PeripheralGroup,
-    src: Peripheral,
-    name: []const u8,
-    description: []const u8,
-    offset_bytes: u64,
-    count: u32,
-) !void {
-    var peripheral = Peripheral{
-        .name = name,
-        .description = description,
-        .offset_bytes = offset_bytes,
-        .count = count,
-        .peripheral_type = try self.copyPeripheralType(db, src_group, src.peripheral_type, name),
-    };
-
-    try self.peripherals.append(db.gpa, peripheral);
-}
-
-pub fn copyPeripheralType(
-    self: *PeripheralGroup,
-    db: Database,
-    src_group: PeripheralGroup,
-    src: PeripheralType.ID,
-    name: []const u8,
-) !PeripheralType.ID {
-    const src_type = src_group.peripheral_types.items[src];
-    var peripheral_type = PeripheralType{
-        .name = name,
-        .description = src_type.description,
-    };
-    for (src_type.registers.items) |register| {
-        try peripheral_type.registers.append(db.gpa, .{
-            .name = register.name,
-            .description = register.description,
-            .offset_bytes = register.offset_bytes,
-            .reset_value = register.reset_value,
-            .reset_mask = register.reset_mask,
-            .access = register.access,
-            .data_type = try self.copyType(db, src_group, register.data_type),
-        });
+    const id2 = id;
+    _ =id2;
+    try self.data_types.append(self.gpa, copy);
+    try self.data_type_dedup.putNoClobberContext(self.gpa, copy, id, .{ .group = self });
+    if (copy.name.len > 0) {
+        try self.data_type_lookup.putNoClobber(self.gpa, copy.name, id);
     }
-
-    const id: PeripheralType.ID = @intCast(self.peripheral_types.items.len);
-    try self.peripheral_types.append(db.gpa, peripheral_type);
     return id;
 }
 
-pub fn computeRefCounts(self: *PeripheralGroup) void {
-    // for (self.data_types.items) |*data_type| {
-    //     data_type.ref_count = 0;
-    // }
-    // for (self.peripheral_types.items) |*peripheral_type| {
-    //     peripheral_type.ref_count = 0;
-    // }
-    for (self.peripherals.items) |peripheral| {
-        if (peripheral.deleted) continue;
-
-        const type_id = peripheral.peripheral_type;
-        const t = self.peripheral_types.items[type_id];
-        self.peripheral_types.items[type_id].ref_count = t.ref_count + 1;
-        if (t.ref_count == 0) {
-            for (t.registers.items) |register| {
-                self.addDataTypeRef(register.data_type);
-            }
+pub fn maybeDupe(self: PeripheralGroup, maybe_str: ?[]const u8) ![]const u8 {
+    if (maybe_str) |str| {
+        if (str.len > 0) {
+            return self.arena.dupe(u8, str);
         }
     }
+    return "";
 }
 
-fn addDataTypeRef(self: *PeripheralGroup, id: DataType.ID) void {
-    const t = self.data_types.items[id];
-    self.data_types.items[id].ref_count = t.ref_count + 1;
-    if (t.ref_count == 0) {
-        switch (t.kind) {
-            .unsigned, .@"enum", .external => {},
-            .@"array" => |info| {
-                self.addDataTypeRef(info.data_type);
-            },
-            .@"packed" => |fields| {
-                for (fields.items) |field| {
-                    self.addDataTypeRef(field.data_type);
-                }
-            },
+fn updateFallbackName(self: PeripheralGroup, existing: []const u8, new: []const u8, allow_dupe: bool) ![]const u8 {
+    if (existing.len == 0) return if (allow_dupe) self.maybeDupe(new) else new;
+    if (std.mem.indexOfDiff(u8, existing, new)) |i| {
+        if (i > 2) {
+            return existing[0..i];
         }
+        return if (allow_dupe) self.maybeDupe(new) else new;
     }
+    return existing;
 }
 
-pub fn createEnumType(self: *PeripheralGroup, db: Database, name: []const u8, maybe_desc: ?[]const u8, bits: u32, fields: []const DataType.EnumField) !DataType.ID {
-    var fields_list = try std.ArrayListUnmanaged(DataType.EnumField).initCapacity(db.gpa, fields.len);
-    fields_list.appendSliceAssumeCapacity(fields);
+pub fn getOrCreateRegisterType(self: *PeripheralGroup, inner: DataType.ID, access: DataType.AccessPolicy) !DataType.ID {
+    const size_bits = self.data_types.items[inner].size_bits;
+    return self.getOrCreateType(.{
+        .name = "",
+        .size_bits = size_bits,
+        .kind = .{ .register = .{
+            .data_type = inner,
+            .access = access,
+        }},
+        .always_inline = true,
+    }, .{});
+}
 
-    const id: DataType.ID = @intCast(self.data_types.items.len);
-    try self.data_types.append(db.gpa, .{
-        .name = try db.arena.dupe(u8, name),
-        .description = if (maybe_desc) |desc| try db.arena.dupe(u8, desc) else "",
+pub fn getOrCreateArrayType(self: *PeripheralGroup, inner: DataType.ID, count: u32) !DataType.ID {
+    const size_bits = self.data_types.items[inner].size_bits * count;
+    return self.getOrCreateType(.{
+        .name = "",
+        .size_bits = size_bits,
+        .kind = .{ .collection = .{
+            .count = count,
+            .data_type = inner,
+        }},
+        .always_inline = true,
+    }, .{});
+}
+
+pub fn getOrCreateUnsigned(self: *PeripheralGroup, bits: u32) !DataType.ID {
+    var name_buf: [64]u8 = undefined;
+    return self.getOrCreateType(.{
+        .name = try std.fmt.bufPrint(&name_buf, "u{}", .{ bits }),
         .size_bits = bits,
-        .kind = .{ .@"enum" = fields_list },
-    });
-
-    return id;
+        .kind = .unsigned,
+        .always_inline = true,
+    }, .{});
 }
 
-pub fn createPackedType(self: *PeripheralGroup, db: Database, name: []const u8, maybe_desc: ?[]const u8, bits: u32, fields: []const DataType.PackedField) !DataType.ID {
-    var fields_list = try std.ArrayListUnmanaged(DataType.PackedField).initCapacity(db.gpa, fields.len);
-    fields_list.appendSliceAssumeCapacity(fields);
-
-    const id: DataType.ID = @intCast(self.data_types.items.len);
-    try self.data_types.append(db.gpa, .{
-        .name = try db.arena.dupe(u8, name),
-        .description = if (maybe_desc) |desc| try db.arena.dupe(u8, desc) else "",
-        .size_bits = bits,
-        .kind = .{ .@"packed" = fields_list },
-    });
-
-    return id;
+pub fn getOrCreateBool(self: *PeripheralGroup) !DataType.ID {
+    return self.getOrCreateType(.{
+        .name = "bool",
+        .size_bits = 1,
+        .kind = .boolean,
+        .always_inline = true,
+    }, .{});
 }
 
-pub fn findType(self: *PeripheralGroup, db: Database, name: []const u8) !?DataType.ID {
+pub fn findType(self: *PeripheralGroup, name: []const u8) !?DataType.ID {
+    if (self.data_type_lookup.get(name)) |id| return id;
+
     if (std.mem.startsWith(u8, name, "u")) {
         if (std.fmt.parseInt(u32, name[1..], 10)) |bits| {
-            return try self.getUnsignedType(db, bits);
+            return try self.getOrCreateUnsigned(bits);
         } else |_| {}
     }
 
-    var result: ?DataType.ID = null;
-    for (self.data_types.items, 0..) |dt, id| {
-        if (std.mem.eql(u8, dt.name, name)) {
-            result = @intCast(id);
-        }
+    if (std.mem.eql(u8, name, "bool")) {
+        return try self.getOrCreateBool();
     }
-    return result;
-}
 
-pub fn getUnsignedType(self: *PeripheralGroup, db: Database, width: u32) !DataType.ID {
-    if (self.unsigned_types.get(width)) |id| {
-        return id;
-    } else {
-        const id: DataType.ID = @intCast(self.data_types.items.len);
-        try self.data_types.append(db.gpa, .{
-            .name = "",
-            .description = "",
-            .size_bits = width,
-            .kind = .unsigned,
-        });
-        try self.unsigned_types.put(db.gpa, width, id);
-        return id;
-    }
-}
+    // TODO [] prefix for arrays
 
-pub fn getArrayType(self: *PeripheralGroup, db: Database, data_type: DataType.ID, count: u32) !DataType.ID {
-    const info = DataType.ArrayInfo {
-        .count = count,
-        .data_type = data_type,
-    };
-    if (self.array_types.get(info)) |id| {
-        return id;
-    } else {
-        const inner = self.data_types.items[data_type];
-        const inner_size_bytes = (inner.size_bits + 7) / 8;
-
-        const id: DataType.ID = @intCast(self.data_types.items.len);
-        try self.data_types.append(db.gpa, .{
-            .name = "",
-            .description = "",
-            .size_bits = inner_size_bytes * 8 * count,
-            .kind = .{ .@"array" = info },
-        });
-        try self.array_types.put(db.gpa, info, id);
-        return id;
-    }
+    return null;
 }
 
 pub fn lessThan(_: void, a: PeripheralGroup, b: PeripheralGroup) bool {
     return std.mem.lessThan(u8, a.name, b.name);
 }
 
-pub fn sort(self: *PeripheralGroup) void {
-    for (self.data_types.items) |data_type| {
-        switch (data_type.kind) {
-            .@"packed" => |fields| {
-                std.sort.insertion(DataType.PackedField, fields.items, {}, DataType.PackedField.lessThan);
-            },
-            else => {},
-        }
-    }
-
-    std.sort.insertion(Peripheral, self.peripherals.items, {}, Peripheral.lessThan);
-
-    for (self.peripheral_types.items) |peripheral_type| {
-        std.sort.insertion(Register, peripheral_type.registers.items, {}, Register.lessThan);
-    }
-}
-
-
-const DedupDataTypeContext = struct {
-    group: *PeripheralGroup,
-
-    pub fn hash(ctx: DedupDataTypeContext, a: DataType) u64 {
-        var h = std.hash.Wyhash.init(0);
-        h.update(a.name);
-        h.update(a.description);
-        h.update(std.mem.asBytes(&a.size_bits));
-
-        const tag = std.meta.activeTag(a.kind);
-        h.update(std.mem.asBytes(&tag));
-
-        switch (a.kind) {
-            .unsigned => {},
-            .@"array" => |info| {
-                h.update(std.mem.asBytes(&info.count));
-                const dt_hash = ctx.hash(ctx.group.data_types.items[info.data_type]);
-                h.update(std.mem.asBytes(&dt_hash));
-            },
-            .@"packed" => |fields| for (fields.items) |f| {
-                if (f.deleted) continue;
-                h.update(f.name);
-                h.update(f.description);
-                h.update(std.mem.asBytes(&f.offset_bits));
-                h.update(std.mem.asBytes(&f.default_value));
-                const dt_hash = ctx.hash(ctx.group.data_types.items[f.data_type]);
-                h.update(std.mem.asBytes(&dt_hash));
-            },
-            .@"enum" => |fields| for (fields.items) |f| {
-                if (f.deleted) continue;
-                h.update(f.name);
-                h.update(f.description);
-                h.update(std.mem.asBytes(&f.value));
-            },
-            .external => |import| h.update(import),
-        }
-
-        return h.final();
-    }
-    pub fn eql(ctx: DedupDataTypeContext, a: DataType, b: DataType) bool {
-        if (a.size_bits != b.size_bits) return false;
-        if (!std.mem.eql(u8, a.name, b.name)) return false;
-        if (!std.mem.eql(u8, a.description, b.description)) return false;
-
-        if (std.meta.activeTag(a.kind) != std.meta.activeTag(b.kind)) return false;
-        switch (a.kind) {
-            .unsigned => {},
-            .@"array" => |a_info| {
-                const b_info = b.kind.@"array";
-                if (a_info.count != b_info.count) return false;
-
-                const at = ctx.group.data_types.items[a_info.data_type];
-                const bt = ctx.group.data_types.items[b_info.data_type];
-                if (!ctx.eql(at, bt)) return false;
-            },
-            .@"packed" => |fields_list| {
-                const a_fields = fields_list.items;
-                const b_fields = b.kind.@"packed".items;
-
-                var ai: usize = 0;
-                var bi: usize = 0;
-                outer: while (ai < a_fields.len and bi < b_fields.len) {
-                    while (a_fields[ai].deleted) {
-                        ai += 1;
-                        if (ai >= a_fields.len) break :outer;
-                    }
-                    while (b_fields[bi].deleted) {
-                        bi += 1;
-                        if (bi >= b_fields.len) break :outer;
-                    }
-
-                    const af = a_fields[ai];
-                    const bf = b_fields[bi];
-
-                    if (af.offset_bits != bf.offset_bits) return false;
-                    if (af.default_value != bf.default_value) return false;
-                    if (!std.mem.eql(u8, af.name, bf.name)) return false;
-                    if (!std.mem.eql(u8, af.description, bf.description)) return false;
-
-                    const at = ctx.group.data_types.items[af.data_type];
-                    const bt = ctx.group.data_types.items[bf.data_type];
-                    if (!ctx.eql(at, bt)) return false;
-
-                    ai += 1;
-                    bi += 1;
-                }
-                if (ai != a_fields.len or bi != b_fields.len) return false;
-            },
-            .@"enum" => |fields_list| {
-                const a_fields = fields_list.items;
-                const b_fields = b.kind.@"enum".items;
-
-                var ai: usize = 0;
-                var bi: usize = 0;
-                outer: while (ai < a_fields.len and bi < b_fields.len) {
-                    while (a_fields[ai].deleted) {
-                        ai += 1;
-                        if (ai >= a_fields.len) break :outer;
-                    }
-                    while (b_fields[bi].deleted) {
-                        bi += 1;
-                        if (bi >= b_fields.len) break :outer;
-                    }
-
-                    const af = a_fields[ai];
-                    const bf = b_fields[bi];
-
-                    if (af.value != bf.value) return false;
-                    if (!std.mem.eql(u8, af.name, bf.name)) return false;
-                    if (!std.mem.eql(u8, af.description, bf.description)) return false;
-
-                    ai += 1;
-                    bi += 1;
-                }
-                if (ai != a_fields.len or bi != b_fields.len) return false;
-            },
-            .external => |a_import| {
-                const b_import = b.kind.external;
-                if (!std.mem.eql(u8, a_import, b_import)) return false;
-            },
-        }
-        return true;
-    }
-};
-
-const DedupPeripheralTypeContext = struct {
-    pub fn hash(_: DedupPeripheralTypeContext, a: PeripheralType) u64 {
-        var h = std.hash.Wyhash.init(0);
-        // h.update(a.name);
-        h.update(a.description);
-
-        for (a.registers.items) |reg| {
-            h.update(reg.name);
-            h.update(reg.description);
-            h.update(std.mem.asBytes(&reg.offset_bytes));
-            h.update(std.mem.asBytes(&reg.reset_value));
-            h.update(std.mem.asBytes(&reg.reset_mask));
-            h.update(std.mem.asBytes(&reg.access));
-
-            // Data types will be deduped before peripheral types, so we don't need to recurse through the type definition
-            h.update(std.mem.asBytes(&reg.data_type));
-        }
-
-        return h.final();
-    }
-    pub fn eql(_: DedupPeripheralTypeContext, a: PeripheralType, b: PeripheralType) bool {
-        // if (!std.mem.eql(u8, a.name, b.name)) return false;
-        if (!std.mem.eql(u8, a.description, b.description)) return false;
-
-        if (a.registers.items.len != b.registers.items.len) return false;
-        for (a.registers.items, b.registers.items) |ar, br| {
-            if (ar.offset_bytes != br.offset_bytes) return false;
-            if (ar.data_type != br.data_type) return false;
-            if (ar.reset_value != br.reset_value) return false;
-            if (ar.reset_mask != br.reset_mask) return false;
-            if (ar.access != br.access) return false;
-            if (!std.mem.eql(u8, ar.name, br.name)) return false;
-            if (!std.mem.eql(u8, ar.description, br.description)) return false;
-        }
-        return true;
-    }
-};
-
-pub fn dedup(self: *PeripheralGroup, db: Database) !void {
-    std.log.debug("Deduplicating peripheral group {s}", .{ self.name });
-
-    var data_types = std.HashMap(DataType, DataType.ID, DedupDataTypeContext, std.hash_map.default_max_load_percentage).initContext(db.gpa, .{ .group = self });
-    defer data_types.deinit();
-
-    var data_types_remap = std.AutoHashMap(DataType.ID, DataType.ID).init(db.gpa);
-    defer data_types_remap.deinit();
-
-    for (self.data_types.items, 0..) |data_type, id_usize| {
-        const id: DataType.ID = @intCast(id_usize);
-
-        var result = try data_types.getOrPut(data_type);
-        if (result.found_existing) {
-            try data_types_remap.put(id, result.value_ptr.*);
-        } else {
-            result.value_ptr.* = id;
-        }
-    }
-
-    for (self.data_types.items, 0..) |data_type, id_usize| {
-        const id: DataType.ID = @intCast(id_usize);
-        switch (data_type.kind) {
-            .@"array" => |info| {
-                if (data_types_remap.get(info.data_type)) |dt| {
-                    std.log.debug("Deduplicating array data type {} -> {}", .{ info.data_type, dt });
-                    self.data_types.items[id].kind.@"array".data_type = dt;
-                }
-            },
-            .@"packed" => for (self.data_types.items[id].kind.@"packed".items) |*field| {
-                if (data_types_remap.get(field.data_type)) |dt| {
-                    std.log.debug("Deduplicating packed field type {} -> {}", .{ field.data_type, dt });
-                    field.data_type = dt;
-                }
-            },
-            else => {},
-        }
-    }
-
-    var peripheral_types = std.HashMap(PeripheralType, PeripheralType.ID, DedupPeripheralTypeContext, std.hash_map.default_max_load_percentage).init(db.gpa);
-    defer peripheral_types.deinit();
-
-    var peripheral_types_remap = std.AutoHashMap(PeripheralType.ID, PeripheralType.ID).init(db.gpa);
-    defer peripheral_types_remap.deinit();
-
-    for (self.peripheral_types.items, 0..) |peripheral_type, id_usize| {
-        const id: PeripheralType.ID = @intCast(id_usize);
-
-        for (peripheral_type.registers.items) |*register| {
-            if (data_types_remap.get(register.data_type)) |dt| {
-                std.log.debug("Deduplicating register {s}.{s}.{s} type {} -> {}", .{
-                    self.name,
-                    peripheral_type.name,
-                    register.name,
-                    register.data_type,
-                    dt
-                });
-                register.data_type = dt;
-            }
-        }
-
-        var result = try peripheral_types.getOrPut(peripheral_type);
-        if (result.found_existing) {
-            const existing_id = result.value_ptr.*;
-            try peripheral_types_remap.put(id, existing_id);
-
-            const existing = &self.peripheral_types.items[existing_id];
-
-            if (!std.mem.eql(u8, existing.name, peripheral_type.name)) {
-                var n: usize = 1;
-                while (n < existing.name.len) : (n += 1) {
-                    const new_name = existing.name[0 .. existing.name.len - n];
-                    if (std.mem.startsWith(u8, peripheral_type.name, new_name)) {
-                        existing.name = new_name;
-                        break;
-                    }
-                }
-            }
-        } else {
-            result.value_ptr.* = id;
-        }
-    }
-
-    for (self.peripherals.items) |*peripheral| {
-        if (peripheral_types_remap.get(peripheral.peripheral_type)) |pt| {
-            peripheral.peripheral_type = pt;
-        }
-    }
-}
-
-pub fn debug(self: PeripheralGroup) void {
-    const prefix = if (self.separate_file) "(separate file) " else "";
-    std.log.debug("Peripheral Group: {s}{s} - {s}", .{ prefix, self.name, self.description });
-
-    // for (self.data_types.items, 0..) |dt, id| {
-    //     dt.debug(@intCast(id), self.name);
+pub fn computeRefCounts(self: *PeripheralGroup) void {
+    // for (self.data_types.items) |*data_type| {
+    //     data_type.ref_count = 0;
     // }
-
     for (self.peripherals.items) |peripheral| {
-        const peripheral_type = self.peripheral_types.items[peripheral.peripheral_type];
-
-        std.log.debug("{s}.{s} ({})", .{ self.name, peripheral.name, peripheral.peripheral_type });
-
-        for (peripheral_type.registers.items) |register| {
-
-            const data_type = self.data_types.items[register.data_type];
-            if (data_type.name.len == 0) {
-                std.log.debug("{s}.{s}.{s}: {s} {} ({})", .{
-                    self.name,
-                    peripheral.name,
-                    register.name,
-                    @tagName(data_type.kind),
-                    data_type.size_bits,
-                    register.data_type,
-                });
-            } else {
-                std.log.debug("{s}.{s}.{s}: {s} ({})", .{
-                    self.name,
-                    peripheral.name,
-                    register.name,
-                    data_type.name,
-                    register.data_type,
-                });
-            }
-
-            switch (data_type.kind) {
-                .@"packed" => |fields| for (fields.items) |f| {
-                    const field_data_type = self.data_types.items[f.data_type];
-                    if (field_data_type.name.len == 0) {
-                        std.log.debug("{s}.{s}.{s}.{s}: {s} {} ({})", .{
-                            self.name,
-                            peripheral.name,
-                            register.name,
-                            f.name,
-                            @tagName(field_data_type.kind),
-                            data_type.size_bits,
-                            f.data_type,
-                        });
-                    } else {
-                        std.log.debug("{s}.{s}.{s}.{s}: {s} ({})", .{
-                            self.name,
-                            peripheral.name,
-                            register.name,
-                            f.name,
-                            field_data_type.name,
-                            f.data_type,
-                        });
-                    }
-                },
-                else => {},
-            }
-
-        }
-
+        if (peripheral.deleted) continue;
+        self.data_types.items[peripheral.data_type].addRef(self);
+        // "Top level" types used directly by peripherals should always be defined separately if possible.
+        // Adding a second ref ensures that will happen unless the type is unnamed:
+        self.data_types.items[peripheral.data_type].addRef(self);
     }
+}
 
+pub fn assignNames(self: *PeripheralGroup) !void {
+    for (self.data_types.items, 0..) |*dt, id| {
+        if (!dt.always_inline and dt.ref_count > 1 and dt.name.len == 0 and dt.fallback_name.len > 0) {
+            var new_name = dt.fallback_name;
+            var attempt: u64 = 1;
+            while (true) {
+                const result = try self.data_type_lookup.getOrPut(self.gpa, new_name);
+                if (result.found_existing) {
+                    new_name = try std.fmt.allocPrint(self.arena, "{s}_{}", .{ dt.fallback_name, attempt });
+                    attempt += 1;
+                } else {
+                    result.value_ptr.* = @intCast(id);
+                    dt.fallback_name = new_name;
+                    break;
+                }
+            }
+        }
+    }
 }

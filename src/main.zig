@@ -14,20 +14,22 @@ pub fn main() !void {
         .arena = arena.allocator(),
     };
 
+    var temp_arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
+    defer temp_arena.deinit();
+
+    const json = try std.fs.cwd().readFileAlloc(temp_arena.allocator(), "device.json", 100_000_000);
+    try regzon.loadDatabase(temp_arena.allocator(), &db, json, null);
+
+    _ = temp_arena.reset(.retain_capacity);
+
+    try db.createNvic();
+
     {
-        var temp_arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
-        defer temp_arena.deinit();
-
-        const json = try std.fs.cwd().readFileAlloc(temp_arena.allocator(), "device.json", 100_000_000);
-        try regzon.loadDatabase(temp_arena.allocator(), &db, json, null);
-
-        _ = temp_arena.reset(.retain_capacity);
-
         var sx_file = try std.fs.cwd().openFile("device.sx", .{});
         defer sx_file.close();
         const file_reader = sx_file.reader();
         var sx_reader = sx.reader(temp_arena.allocator(), file_reader);
-        modify.parseAndApplySx(&db, @TypeOf(file_reader), &sx_reader) catch |e| {
+        modify.handleSx(&db, @TypeOf(file_reader), &sx_reader) catch |e| {
             if (e == error.SExpressionSyntaxError) {
                 var stderr = std.io.getStdErr().writer();
                 try stderr.writeAll("Syntax error in type overrides file:\n");
@@ -38,11 +40,11 @@ pub fn main() !void {
         };
     }
 
-    try db.createNvic();
+    _ = temp_arena.reset(.free_all);
 
-    db.sort();
-    try db.dedup();
     db.computeRefCounts();
+    try db.assignNames();
+    db.sort();
 
     var temp = std.ArrayList(u8).init(gpa.allocator());
     try generate.writeRegTypes(db, temp.writer());

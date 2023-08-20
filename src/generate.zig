@@ -78,76 +78,84 @@ pub fn writeRegTypes(db: Database, writer: anytype) !void {
 
 pub fn writePeripheralGroupTypes(group: PeripheralGroup, writer: anytype, import_prefix: []const u8) !void {
     for (group.data_types.items) |data_type| {
-        if (data_type.ref_count <= 1 or data_type.name.len == 0) continue;
+        const name = data_type.zigName();
+        if (data_type.always_inline or data_type.ref_count <= 1 or name.len == 0) continue;
 
         try writer.writeByte('\n');
         try writeComment(data_type.description, writer);
         try writer.print("pub const {s} = ", .{
-            std.zig.fmtId(data_type.name),
+            std.zig.fmtId(name),
         });
 
-        try writeDataTypeImpl(group, data_type, import_prefix, writer);
+        try writeDataTypeImpl(group, data_type, "", import_prefix, writer);
         try writer.writeAll(";\n");
     }
-
-    for (group.peripheral_types.items) |peripheral_type| {
-        if (peripheral_type.ref_count == 0) continue;
-
-        try writer.writeByte('\n');
-        try writeComment(peripheral_type.description, writer);
-        try writer.print("pub const {s} = extern struct {{\n", .{
-            std.zig.fmtId(peripheral_type.name),
-        });
-
-        var offset_bytes: u32 = 0;
-        for (peripheral_type.registers.items) |register| {
-            if (register.offset_bytes > offset_bytes) {
-                try writer.print("_reserved_{x}: [{}]u8 = undefined,\n", .{
-                    offset_bytes,
-                    register.offset_bytes - offset_bytes,
-                });
-                offset_bytes = register.offset_bytes;
-            }
-
-            try writeComment(register.description, writer);
-            try writer.print("{s}: Mmio(", .{ std.zig.fmtId(register.name) });
-
-            const data_type = group.data_types.items[register.data_type];
-            try writeDataTypeRef(group, data_type, import_prefix, writer);
-            try writer.writeAll(switch (register.access) {
-                .@"read-write" => ", .rw),\n",
-                .@"read-only" => ", .r),\n",
-                .@"write-only" => ", .w),\n",
-            });
-
-            offset_bytes += (data_type.size_bits + 7) / 8;
-        }
-
-        try writer.writeAll("};\n");
-    }
 }
 
-fn writeDataTypeRef(group: PeripheralGroup, data_type: DataType, import_prefix: []const u8, writer: anytype) @TypeOf(writer).Error!void {
-    if (data_type.name.len > 0 and data_type.ref_count > 1) {
-        try writer.print("{s}", .{ std.zig.fmtId(data_type.name) });
+fn writeDataTypeRef(group: PeripheralGroup, data_type: DataType, reg_types_prefix: []const u8, import_prefix: []const u8, writer: anytype) @TypeOf(writer).Error!void {
+    const name = data_type.zigName();
+    if (!data_type.always_inline and name.len > 0 and data_type.ref_count > 1) {
+        try writer.print("{s}{s}", .{ reg_types_prefix, std.zig.fmtId(name) });
     } else {
-        try writeDataTypeImpl(group, data_type, import_prefix, writer);
+        try writeDataTypeImpl(group, data_type, reg_types_prefix, import_prefix, writer);
     }
 }
 
-fn writeDataTypeImpl(group: PeripheralGroup, data_type: DataType, import_prefix: []const u8, writer: anytype) @TypeOf(writer).Error!void {
+fn writeDataTypeImpl(group: PeripheralGroup, data_type: DataType, reg_types_prefix: []const u8, import_prefix: []const u8, writer: anytype) @TypeOf(writer).Error!void {
     switch (data_type.kind) {
         .unsigned => try writer.print("u{}", .{ data_type.size_bits }),
-        .@"array" => |array_info| {
-            try writer.print("[{}]", .{ array_info.count });
-            try writeDataTypeRef(group, group.data_types.items[array_info.data_type], import_prefix, writer);
+        .boolean => try writer.writeAll("bool"),
+        .external => |info| {
+            try writer.print("@import(\"{s}{s}\").{s}", .{
+                std.fmt.fmtSliceEscapeUpper(import_prefix),
+                std.fmt.fmtSliceEscapeUpper(info.import),
+                std.zig.fmtId(data_type.zigName()),
+            });
         },
-        .@"packed" => |fields| {
+        .register => |info| {
+             try writer.writeAll("Mmio(");
+             try writeDataTypeRef(group, group.data_types.items[info.data_type], reg_types_prefix, import_prefix, writer);
+             try writer.print(", .{s})", .{ @tagName(info.access) });
+        },
+        .collection => |info| {
+            try writer.print("[{}]", .{ info.count });
+            try writeDataTypeRef(group, group.data_types.items[info.data_type], reg_types_prefix, import_prefix, writer);
+        },
+        .alternative => |fields| {
+            try writer.writeAll("union {\n");
+            for (fields) |field| {
+                try writeComment(field.description, writer);
+                try writer.print("{s}: ", .{ std.zig.fmtId(field.name) });
+                try writeDataTypeRef(group, group.data_types.items[field.data_type], reg_types_prefix, import_prefix, writer);
+                try writer.writeAll(",\n");
+            }
+            try writer.writeAll("}");
+        },
+        .structure => |fields| {
+            try writer.writeAll("extern struct {\n");
+            var offset_bytes: u32 = 0;
+            for (fields) |field| {
+                if (offset_bytes < field.offset_bytes) {
+                    try writer.print("_reserved_{x}: [{}]u8 = undefined,\n", .{
+                        offset_bytes,
+                        field.offset_bytes - offset_bytes,
+                    });
+                    offset_bytes = field.offset_bytes;
+                }
+                try writeComment(field.description, writer);
+                try writer.print("{s}: ", .{ std.zig.fmtId(field.name) });
+                const field_data_type = group.data_types.items[field.data_type];
+                try writeDataTypeRef(group, field_data_type, reg_types_prefix, import_prefix, writer);
+                try writeDataTypeValue(field_data_type, field.default_value, writer);
+                try writer.writeAll(",\n");
+                offset_bytes += (field_data_type.size_bits + 7) / 8;
+            }
+            try writer.writeAll("}");
+        },
+        .bitpack => |fields| {
             try writer.print("packed struct (u{}) {{\n", .{ data_type.size_bits });
             var offset_bits: u32 = 0;
-            for (fields.items) |field| {
-                if (field.deleted) continue;
-
+            for (fields) |field| {
                 if (offset_bits < field.offset_bits) {
                     try writer.print("_reserved_{x}: u{} = 0,\n", .{
                         offset_bits,
@@ -158,8 +166,7 @@ fn writeDataTypeImpl(group: PeripheralGroup, data_type: DataType, import_prefix:
                 try writeComment(field.description, writer);
                 try writer.print("{s}: ", .{ std.zig.fmtId(field.name) });
                 const field_data_type = group.data_types.items[field.data_type];
-                try writeDataTypeRef(group, field_data_type, import_prefix, writer);
-                try writer.writeAll(" = ");
+                try writeDataTypeRef(group, field_data_type, reg_types_prefix, import_prefix, writer);
                 try writeDataTypeValue(field_data_type, field.default_value, writer);
                 try writer.writeAll(",\n");
                 offset_bits += field_data_type.size_bits;
@@ -172,12 +179,10 @@ fn writeDataTypeImpl(group: PeripheralGroup, data_type: DataType, import_prefix:
             }
             try writer.writeAll("}");
         },
-        .@"enum" => |fields| {
+        .enumeration => |fields| {
             try writer.print("enum (u{}) {{\n", .{ data_type.size_bits });
             var num_fields: usize = 0;
-            for (fields.items) |field| {
-                if (field.deleted) continue;
-
+            for (fields) |field| {
                 num_fields += 1;
                 try writeComment(field.description, writer);
                 try writer.print("{s} = 0x{X},\n", .{
@@ -190,13 +195,6 @@ fn writeDataTypeImpl(group: PeripheralGroup, data_type: DataType, import_prefix:
             }
             try writer.writeAll("}");
         },
-        .external => |import| {
-            try writer.print("@import(\"{s}{s}\").{s}", .{
-                std.fmt.fmtSliceEscapeUpper(import_prefix),
-                std.fmt.fmtSliceEscapeUpper(import),
-                std.zig.fmtId(data_type.name),
-            });
-        },
     }
 }
 
@@ -204,22 +202,26 @@ fn writeDataTypeValue(data_type: DataType, value: u64, writer: anytype) !void {
     switch (data_type.kind) {
         .unsigned => {
             if (value > 9) {
-                try writer.print("0x{X}", .{ value });
+                try writer.print(" = 0x{X}", .{ value });
             } else {
-                try writer.print("{}", .{ value });
+                try writer.print(" = {}", .{ value });
             }
         },
-        .@"enum" => |fields| {
-            for (fields.items) |field| {
+        .boolean => {
+            try writer.writeAll(if (value == 0) " = false" else " = true");
+        },
+        .enumeration => |fields| {
+            for (fields) |field| {
                 if (field.value == value) {
-                    try writer.print(".{s}", .{ std.zig.fmtId(field.name) });
+                    try writer.print(" = .{s}", .{ std.zig.fmtId(field.name) });
                     break;
                 }
-            } else try writer.print("@enumFromInt({})", .{ value });
+            } else try writer.print(" = @enumFromInt({})", .{ value });
         },
-        else => {
-            try writer.print("@bitCast(0x{X})", .{ value });
+        .structure, .bitpack, .external => {
+            try writer.print(" = @bitCast(0x{X})", .{ value });
         },
+        .register, .collection, .alternative => {},
     }
 }
 
@@ -232,28 +234,21 @@ pub fn writePeripheralInstances(db: Database, writer: anytype) !void {
     );
 
     for (db.groups.items) |group| {
+        var types_prefix: []const u8 = undefined;
+        if (group.name.len > 0) {
+            types_prefix = try std.fmt.allocPrint(db.gpa, "types.{s}.", .{ std.zig.fmtId(group.name) });
+        } else {
+            types_prefix = try db.gpa.dupe(u8, "types.");
+        }
+        defer db.gpa.free(types_prefix);
+
         for (group.peripherals.items) |peripheral| {
             if (peripheral.deleted) continue;
 
-            var buf: [32]u8 = undefined;
-            const array_count = if (peripheral.count > 1) try std.fmt.bufPrint(&buf, "[{}]", .{ peripheral.count }) else "";
-
             try writeComment(peripheral.description, writer);
-            try writer.print("pub const {s} = @as(*volatile {s}types.", .{
-                std.zig.fmtId(peripheral.name),
-                array_count,
-            });
-
-            if (group.name.len > 0) {
-                try writer.print("{s}.", .{ std.zig.fmtId(group.name) });
-            }
-
-            const peripheral_type = group.peripheral_types.items[peripheral.peripheral_type];
-
-            try writer.print("{s}, @ptrFromInt(0x{X}));\n", .{
-                std.zig.fmtId(peripheral_type.name),
-                peripheral.offset_bytes,
-            });
+            try writer.print("pub const {s} = @as(*volatile ", .{ std.zig.fmtId(peripheral.name) });
+            try writeDataTypeRef(group, group.data_types.items[peripheral.data_type], types_prefix, "reg_types/", writer);
+            try writer.print(", @ptrFromInt(0x{X}));\n", .{ peripheral.base_address });
         }
     }
 }
