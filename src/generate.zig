@@ -225,10 +225,14 @@ fn writeDataTypeImpl(group: PeripheralGroup, data_type: DataType, reg_types_pref
             for (fields) |field| {
                 num_fields += 1;
                 try writeComment(field.description, writer);
-                try writer.print("{s} = 0x{X},\n", .{
+                try writer.print("{s} = ", .{
                     std.zig.fmtId(field.name),
-                    field.value,
                 });
+                if (data_type.size_bits > 4) {
+                    try writer.print("0x{X},\n", .{ field.value });
+                } else {
+                    try writer.print("{},\n", .{ field.value });
+                }
                 if (field.description.len > 0) try writer.writeByte('\n');
             }
             if (num_fields < (@as(u64, 1) << @intCast(data_type.size_bits))) {
