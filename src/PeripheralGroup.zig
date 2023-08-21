@@ -91,6 +91,9 @@ pub fn getOrCreateType(self: *PeripheralGroup, dt: DataType, options: GetOrCreat
         .unsigned, .boolean => dt.kind,
         .external => |info| .{ .external = .{
             .import = if (options.dupe_strings) try self.maybeDupe(info.import) else info.import,
+            .from_int = if (info.from_int) |from_int| blk: {
+                break :blk if (options.dupe_strings) try self.maybeDupe(from_int) else from_int;
+            } else null,
         }},
         .register => |info| .{ .register = .{
             .data_type = try self.getOrCreateType(key.group.data_types.items[info.data_type], .{

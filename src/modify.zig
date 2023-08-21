@@ -298,8 +298,14 @@ fn typeCreate(group: *PeripheralGroup, default_name: []const u8, default_desc: [
             .description => dt.description = try group.maybeDupe(try reader.requireAnyString()),
             .size_bits => dt.size_bits = try reader.requireAnyInt(u32, 0),
             .external => {
+                const import = try group.maybeDupe(try reader.requireAnyString());
+                var maybe_from_int = try reader.anyString();
+                if (maybe_from_int) |from_int| {
+                    maybe_from_int = try group.maybeDupe(from_int);
+                }
                 dt.kind = .{ .external = .{
-                    .import = try group.maybeDupe(try reader.requireAnyString()),
+                    .import = import,
+                    .from_int = maybe_from_int,
                 }};
                 dt.inline_mode = .never;
             },

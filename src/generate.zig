@@ -181,7 +181,7 @@ fn writeDataTypeImpl(group: PeripheralGroup, data_type: DataType, reg_types_pref
                 try writer.print("{s}: ", .{ std.zig.fmtId(field.name) });
                 const field_data_type = group.data_types.items[field.data_type];
                 try writeDataTypeRef(group, field_data_type, reg_types_prefix, import_prefix, writer);
-                try writeDataTypeValue(field_data_type, field.default_value, writer);
+                try writeDataTypeAssign(group, field_data_type, reg_types_prefix, import_prefix, field.default_value, writer);
                 try writer.writeAll(",\n");
                 offset_bytes += (field_data_type.size_bits + 7) / 8;
             }
@@ -202,7 +202,7 @@ fn writeDataTypeImpl(group: PeripheralGroup, data_type: DataType, reg_types_pref
                 try writer.print("{s}: ", .{ std.zig.fmtId(field.name) });
                 const field_data_type = group.data_types.items[field.data_type];
                 try writeDataTypeRef(group, field_data_type, reg_types_prefix, import_prefix, writer);
-                try writeDataTypeValue(field_data_type, field.default_value, writer);
+                try writeDataTypeAssign(group, field_data_type, reg_types_prefix, import_prefix, field.default_value, writer);
                 try writer.writeAll(",\n");
                 offset_bits += field_data_type.size_bits;
             }
@@ -233,7 +233,7 @@ fn writeDataTypeImpl(group: PeripheralGroup, data_type: DataType, reg_types_pref
     }
 }
 
-fn writeDataTypeValue(data_type: DataType, value: u64, writer: anytype) !void {
+fn writeDataTypeAssign(group: PeripheralGroup, data_type: DataType, reg_types_prefix: []const u8, import_prefix: []const u8, value: u64, writer: anytype) !void {
     switch (data_type.kind) {
         .unsigned => {
             if (value > 9) {
@@ -253,8 +253,22 @@ fn writeDataTypeValue(data_type: DataType, value: u64, writer: anytype) !void {
                 }
             } else try writer.print(" = @enumFromInt({})", .{ value });
         },
-        .structure, .bitpack, .external => {
+        .structure, .bitpack => {
             try writer.print(" = @bitCast(0x{X})", .{ value });
+        },
+        .external => |info| {
+            if (info.from_int) |from_int| {
+                try writer.writeAll(" = ");
+                if (std.mem.startsWith(u8, from_int, ".")) {
+                    try writeDataTypeRef(group, data_type, reg_types_prefix, import_prefix, writer);
+                }
+                try writer.writeAll(from_int);
+                try writer.print("0x{X})", .{ value });
+            } else {
+                try writer.writeAll(" = @import(\"chip_util\").fromInt(");
+                try writeDataTypeRef(group, data_type, reg_types_prefix, import_prefix, writer);
+                try writer.print(", 0x{X})", .{ value });
+            }
         },
         .register, .collection, .alternative => {},
     }

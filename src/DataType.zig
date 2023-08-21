@@ -19,6 +19,7 @@ pub const Kind = union(enum) {
     boolean,
     external: struct {
         import: []const u8,
+        from_int: ?[]const u8 = null,
     },
     register: struct {
         data_type: ID,
@@ -170,7 +171,15 @@ fn hash(self: DataType, group: PeripheralGroup) u64 {
 
     switch (self.kind) {
         .unsigned, .boolean => {},
-        .external => |info| h.update(info.import),
+        .external => |info| {
+            h.update(info.import);
+            if (info.from_int) |from_int| {
+                h.update("1");
+                h.update(from_int);
+            } else {
+                h.update("0");
+            }
+        },
         .register => |info| {
             const dt_hash = hash(group.data_types.items[info.data_type], group);
             h.update(std.mem.asBytes(&dt_hash));
@@ -245,6 +254,11 @@ fn eql(a: DataType, a_src: PeripheralGroup, b: DataType, b_src: PeripheralGroup)
         .external => |a_info| {
             const b_info = b.kind.external;
             if (!std.mem.eql(u8, a_info.import, b_info.import)) return false;
+            if (a_info.from_int) |a_from_int| {
+                if (b_info.from_int) |b_from_int| {
+                    if (!std.mem.eql(u8, a_from_int, b_from_int)) return false;
+                } else return false;
+            } else if (b_info.from_int != null) return false;
         },
         .register => |a_info| {
             const b_info = b.kind.register;
