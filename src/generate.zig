@@ -108,13 +108,12 @@ pub fn writeRegTypes(db: Database, writer: anytype) !void {
 
 pub fn writePeripheralGroupTypes(group: PeripheralGroup, writer: anytype, import_prefix: []const u8) !void {
     for (group.data_types.items) |data_type| {
-        const name = data_type.zigName();
-        if (data_type.always_inline or data_type.ref_count <= 1 or name.len == 0) continue;
+        if (data_type.shouldInline()) continue;
 
         try writer.writeByte('\n');
         try writeComment(data_type.description, writer);
         try writer.print("pub const {s} = ", .{
-            std.zig.fmtId(name),
+            std.zig.fmtId(data_type.zigName()),
         });
 
         try writeDataTypeImpl(group, data_type, "", import_prefix, writer);
@@ -123,11 +122,10 @@ pub fn writePeripheralGroupTypes(group: PeripheralGroup, writer: anytype, import
 }
 
 fn writeDataTypeRef(group: PeripheralGroup, data_type: DataType, reg_types_prefix: []const u8, import_prefix: []const u8, writer: anytype) @TypeOf(writer).Error!void {
-    const name = data_type.zigName();
-    if (!data_type.always_inline and name.len > 0 and data_type.ref_count > 1) {
-        try writer.print("{s}{s}", .{ reg_types_prefix, std.zig.fmtId(name) });
-    } else {
+    if (data_type.shouldInline()) {
         try writeDataTypeImpl(group, data_type, reg_types_prefix, import_prefix, writer);
+    } else {
+        try writer.print("{s}{s}", .{ reg_types_prefix, std.zig.fmtId(data_type.zigName()) });
     }
 }
 
@@ -136,11 +134,18 @@ fn writeDataTypeImpl(group: PeripheralGroup, data_type: DataType, reg_types_pref
         .unsigned => try writer.print("u{}", .{ data_type.size_bits }),
         .boolean => try writer.writeAll("bool"),
         .external => |info| {
-            try writer.print("@import(\"{s}{s}\").{s}", .{
-                std.fmt.fmtSliceEscapeUpper(import_prefix),
+            var prefix = import_prefix;
+            if (!std.mem.endsWith(u8, info.import, ".zig")) {
+                prefix = "";
+            }
+            try writer.print("@import(\"{s}{s}\")", .{
+                std.fmt.fmtSliceEscapeUpper(prefix),
                 std.fmt.fmtSliceEscapeUpper(info.import),
-                std.zig.fmtId(data_type.zigName()),
             });
+            var iter = std.mem.tokenizeScalar(u8, data_type.zigName(), '.');
+            while (iter.next()) |tok| {
+                try writer.print(".{s}", .{ std.zig.fmtId(tok) });
+            }
         },
         .register => |info| {
              try writer.writeAll("Mmio(");

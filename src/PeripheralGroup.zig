@@ -210,7 +210,7 @@ pub fn getOrCreateRegisterType(self: *PeripheralGroup, inner: DataType.ID, acces
             .data_type = inner,
             .access = access,
         }},
-        .always_inline = true,
+        .inline_mode = .always,
     }, .{});
 }
 
@@ -223,7 +223,7 @@ pub fn getOrCreateArrayType(self: *PeripheralGroup, inner: DataType.ID, count: u
             .count = count,
             .data_type = inner,
         }},
-        .always_inline = true,
+        .inline_mode = .always,
     }, .{});
 }
 
@@ -233,7 +233,7 @@ pub fn getOrCreateUnsigned(self: *PeripheralGroup, bits: u32) !DataType.ID {
         .name = try std.fmt.bufPrint(&name_buf, "u{}", .{ bits }),
         .size_bits = bits,
         .kind = .unsigned,
-        .always_inline = true,
+        .inline_mode = .always,
     }, .{});
 }
 
@@ -242,7 +242,18 @@ pub fn getOrCreateBool(self: *PeripheralGroup) !DataType.ID {
         .name = "bool",
         .size_bits = 1,
         .kind = .boolean,
-        .always_inline = true,
+        .inline_mode = .always,
+    }, .{ .dupe_strings = false });
+}
+
+pub fn getOrCreateExternalType(self: *PeripheralGroup, name: []const u8, import: []const u8, size: u32) !DataType.ID {
+    return self.getOrCreateType(.{
+        .name = name,
+        .size_bits = size,
+        .kind = .{ .external = .{
+            .import = import,
+        }},
+        .inline_mode = .never,
     }, .{});
 }
 
@@ -283,7 +294,7 @@ pub fn computeRefCounts(self: *PeripheralGroup) void {
 
 pub fn assignNames(self: *PeripheralGroup) !void {
     for (self.data_types.items, 0..) |*dt, id| {
-        if (!dt.always_inline and dt.ref_count > 1 and dt.name.len == 0 and dt.fallback_name.len > 0) {
+        if (dt.inline_mode != .always and dt.ref_count > 1 and dt.name.len == 0 and dt.fallback_name.len > 0) {
             var new_name = dt.fallback_name;
             var attempt: u64 = 1;
             while (true) {

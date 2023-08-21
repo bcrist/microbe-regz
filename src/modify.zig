@@ -297,9 +297,12 @@ fn typeCreate(group: *PeripheralGroup, default_name: []const u8, default_desc: [
             .fallback_name => dt.fallback_name = try group.maybeDupe(try reader.requireAnyString()),
             .description => dt.description = try group.maybeDupe(try reader.requireAnyString()),
             .size_bits => dt.size_bits = try reader.requireAnyInt(u32, 0),
-            .external => dt.kind = .{ .external = .{
-                .import = try group.maybeDupe(try reader.requireAnyString()),
-            }},
+            .external => {
+                dt.kind = .{ .external = .{
+                    .import = try group.maybeDupe(try reader.requireAnyString()),
+                }};
+                dt.inline_mode = .never;
+            },
             .register => {
                 dt.kind = try typeKindRegister(group, T, reader);
                 if (dt.size_bits == 0) {

@@ -11,7 +11,7 @@ fallback_name: []const u8 = "",
 description: []const u8 = "",
 size_bits: u32,
 kind: Kind,
-always_inline: bool = false,
+inline_mode: InlineMode = .auto,
 ref_count: u32 = 0,
 
 pub const Kind = union(enum) {
@@ -34,6 +34,7 @@ pub const Kind = union(enum) {
     enumeration: []const EnumField,
 };
 
+pub const InlineMode = enum { auto, always, never };
 pub const AccessPolicy = enum { rw, r, w };
 
 pub const UnionField = struct {
@@ -97,8 +98,19 @@ pub fn isPackable(self: *DataType) bool {
     };
 }
 
+pub fn shouldInline(self: DataType) bool {
+    if (self.zigName().len == 0) {
+        return true;
+    }
+    return switch (self.inline_mode) {
+        .always => true,
+        .never => false,
+        .auto => self.ref_count <= 1,
+    };
+}
+
 pub fn addRef(self: *DataType, group: *PeripheralGroup) void {
-    if (self.ref_count == 0 or self.always_inline) switch (self.kind) {
+    if (self.ref_count == 0 or self.inline_mode == .always) switch (self.kind) {
         .unsigned, .boolean, .enumeration, .external => {},
 
         .register => |info| {
@@ -150,7 +162,7 @@ fn hash(self: DataType, group: PeripheralGroup) u64 {
     h.update(self.name);
     // fallback names are ignored.
     h.update(self.description);
-    h.update(std.mem.asBytes(&self.always_inline));
+    h.update(std.mem.asBytes(&self.inline_mode));
     h.update(std.mem.asBytes(&self.size_bits));
 
     const tag = std.meta.activeTag(self.kind);
@@ -222,7 +234,7 @@ fn hash(self: DataType, group: PeripheralGroup) u64 {
 }
 fn eql(a: DataType, a_src: PeripheralGroup, b: DataType, b_src: PeripheralGroup) bool {
     if (a.size_bits != b.size_bits) return false;
-    if (a.always_inline != b.always_inline) return false;
+    if (a.inline_mode != b.inline_mode) return false;
     if (!std.mem.eql(u8, a.name, b.name)) return false;
     // fallback names are ignored.
     if (!std.mem.eql(u8, a.description, b.description)) return false;
