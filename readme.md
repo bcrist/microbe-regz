@@ -1,6 +1,6 @@
 # Microbe Register Access Code Generation
 
-This project takes a JSON output file from [regz](/ZigEmbeddedGroup/regz) and generates Zig code for a [microbe](/bcrist/microbe) device.
+This project takes a JSON output file from [regz](https://github.com/ZigEmbeddedGroup/regz) and generates Zig code for a [microbe](https://github.com/bcrist/microbe) device.
 
 Note only Arm SVD files are currently supported.
 
@@ -15,5 +15,5 @@ Note only Arm SVD files are currently supported.
 3. Build regz and add it to your path as well, if you don't already have a .json file to work with
 
 ## See Also
-* [microbe-stm32](/bcrist/microbe-stm32)
-* [microbe-rpi](/bcrist/microbe-rpi)
+* [microbe-stm32](https://github.com/bcrist/microbe-stm32)
+* [microbe-rpi](https://github.com/bcrist/microbe-rpi)
