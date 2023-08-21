@@ -581,6 +581,7 @@ const ModifyTypeOp = enum {
     set_bits,
     inner,
     field,
+    delete_field,
 };
 const modify_type_ops = std.ComptimeStringMap(ModifyTypeOp, .{
     .{ "--", .nop },
@@ -591,6 +592,7 @@ const modify_type_ops = std.ComptimeStringMap(ModifyTypeOp, .{
     .{ "set-bits", .set_bits },
     .{ "inner", .inner },
     .{ "field", .field },
+    .{ "delete-field", .delete_field },
 });
 fn typeModify(action_list: *TypeActionList, group: *PeripheralGroup, types: []DataType, comptime T: type, reader: *sx.Reader(T)) E(T)!void {
     while (try reader.open()) {
@@ -605,6 +607,7 @@ fn typeModify(action_list: *TypeActionList, group: *PeripheralGroup, types: []Da
             .set_bits => try typeSetBits(types, T, reader),
             .inner => try typeModifyInner(action_list, group, types, T, reader),
             .field => try fieldModify(action_list, group, types, T, reader),
+            .delete_field => try fieldDelete(action_list, group, types, T, reader),
         }
         try reader.requireClose();
     }
@@ -687,6 +690,54 @@ fn fieldModify(action_list: *TypeActionList, group: *PeripheralGroup, types: []D
             .@"type" => try fieldTypeModify(action_list, group, field_refs, T, reader),
         }
         try reader.requireClose();
+    }
+}
+
+fn fieldDelete(action_list: *TypeActionList, group: *PeripheralGroup, types: []DataType, comptime T: type, reader: *sx.Reader(T)) E(T)!void {
+    _ = group;
+    _ = action_list;
+    const field_pattern = try reader.requireAnyString();
+
+    for (types) |*dt| {
+        switch (dt.kind) {
+            .unsigned, .boolean, .external, .register, .collection => {},
+            .alternative => |const_fields| {
+                var fields = try std.ArrayList(DataType.UnionField).initCapacity(command_alloc, const_fields.len);
+                for (const_fields) |f| {
+                    if (!nameMatchesPattern(f.name, field_pattern)) {
+                        fields.appendAssumeCapacity(f);
+                    }
+                }
+                dt.kind = .{ .alternative = fields.items };
+            },
+            .structure => |const_fields| {
+                var fields = try std.ArrayList(DataType.StructField).initCapacity(command_alloc, const_fields.len);
+                for (const_fields) |f| {
+                    if (!nameMatchesPattern(f.name, field_pattern)) {
+                        fields.appendAssumeCapacity(f);
+                    }
+                }
+                dt.kind = .{ .structure = fields.items };
+            },
+            .bitpack => |const_fields| {
+                var fields = try std.ArrayList(DataType.PackedField).initCapacity(command_alloc, const_fields.len);
+                for (const_fields) |f| {
+                    if (!nameMatchesPattern(f.name, field_pattern)) {
+                        fields.appendAssumeCapacity(f);
+                    }
+                }
+                dt.kind = .{ .bitpack = fields.items };
+            },
+            .enumeration => |const_fields| {
+                var fields = try std.ArrayList(DataType.EnumField).initCapacity(command_alloc, const_fields.len);
+                for (const_fields) |f| {
+                    if (!nameMatchesPattern(f.name, field_pattern)) {
+                        fields.appendAssumeCapacity(f);
+                    }
+                }
+                dt.kind = .{ .enumeration = fields.items };
+            },
+        }
     }
 }
 
