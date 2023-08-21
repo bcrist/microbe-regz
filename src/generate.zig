@@ -24,6 +24,8 @@ pub fn writeRegTypes(db: Database, writer: anytype) !void {
             std.zig.fmtId(interrupt.name),
             interrupt.index + 16,
         });
+
+        if (interrupt.description.len > 0) try writer.writeByte('\n');
     }
 
     try writer.writeAll(
@@ -163,6 +165,7 @@ fn writeDataTypeImpl(group: PeripheralGroup, data_type: DataType, reg_types_pref
                 try writer.print("{s}: ", .{ std.zig.fmtId(field.name) });
                 try writeDataTypeRef(group, group.data_types.items[field.data_type], reg_types_prefix, import_prefix, writer);
                 try writer.writeAll(",\n");
+                if (field.description.len > 0) try writer.writeByte('\n');
             }
             try writer.writeAll("}");
         },
@@ -183,6 +186,7 @@ fn writeDataTypeImpl(group: PeripheralGroup, data_type: DataType, reg_types_pref
                 try writeDataTypeRef(group, field_data_type, reg_types_prefix, import_prefix, writer);
                 try writeDataTypeAssign(group, field_data_type, reg_types_prefix, import_prefix, field.default_value, writer);
                 try writer.writeAll(",\n");
+                if (field.description.len > 0) try writer.writeByte('\n');
                 offset_bytes += (field_data_type.size_bits + 7) / 8;
             }
             try writer.writeAll("}");
@@ -204,6 +208,7 @@ fn writeDataTypeImpl(group: PeripheralGroup, data_type: DataType, reg_types_pref
                 try writeDataTypeRef(group, field_data_type, reg_types_prefix, import_prefix, writer);
                 try writeDataTypeAssign(group, field_data_type, reg_types_prefix, import_prefix, field.default_value, writer);
                 try writer.writeAll(",\n");
+                if (field.description.len > 0) try writer.writeByte('\n');
                 offset_bits += field_data_type.size_bits;
             }
             if (offset_bits < data_type.size_bits) {
@@ -224,6 +229,7 @@ fn writeDataTypeImpl(group: PeripheralGroup, data_type: DataType, reg_types_pref
                     std.zig.fmtId(field.name),
                     field.value,
                 });
+                if (field.description.len > 0) try writer.writeByte('\n');
             }
             if (num_fields < (@as(u64, 1) << @intCast(data_type.size_bits))) {
                 try writer.writeAll("_,\n");
@@ -305,7 +311,7 @@ pub fn writePeripheralInstances(db: Database, writer: anytype) !void {
 pub fn writeComment(comment: []const u8, writer: anytype) !void {
     if (comment.len == 0) return;
 
-    // try writer.writeByte('\n');
+    try writer.writeByte('\n');
     var lf_it = std.mem.tokenizeSequence(u8, comment, "\\n");
     while (lf_it.next()) |line| {
         try writer.writeAll("/// ");
