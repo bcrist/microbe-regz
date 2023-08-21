@@ -11,7 +11,9 @@ pub fn writeRegTypes(db: Database, writer: anytype) !void {
         \\const chip = @import("chip");
         \\const Mmio = @import("microbe").Mmio;
         \\
-        \\pub const InterruptType = enum(i8) {
+        \\pub const Exception = enum(u9) {
+        \\    none = 0,
+        \\    Reset = 1,
         \\
     );
 
@@ -20,11 +22,39 @@ pub fn writeRegTypes(db: Database, writer: anytype) !void {
 
         try writer.print("{s} = {},\n", .{
             std.zig.fmtId(interrupt.name),
-            interrupt.index,
+            interrupt.index + 16,
         });
     }
 
     try writer.writeAll(
+        \\
+        \\    pub fn toInterrupt(self: Exception) ?Interrupt {
+        \\        const num = @intFromEnum(self);
+        \\        if (num < 16 or num >= 48) return null;
+        \\        const irq: u5 = @intCast(num - 16);
+        \\        return @enumFromInt(irq);
+        \\    }
+        \\};
+        \\
+        \\pub const Interrupt = enum(u5) {
+        \\
+    );
+
+    for (db.interrupts.items) |interrupt| {
+        if (interrupt.index >= 0) {
+            try writer.print("{s} = {},\n", .{
+                std.zig.fmtId(interrupt.name),
+                interrupt.index,
+            });
+        }
+    }
+
+    try writer.writeAll(
+        \\
+        \\    pub fn toException(self: Interrupt) Exception {
+        \\        const num: u9 = @intFromEnum(self);
+        \\        return @enumFromInt(num + 16);
+        \\    }
         \\};
         \\
         \\pub const VectorTable = extern struct {

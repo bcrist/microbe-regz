@@ -346,11 +346,11 @@ fn typeCreate(group: *PeripheralGroup, default_name: []const u8, default_desc: [
             .enumeration => {
                 dt.kind = try typeKindEnumeration(group, T, reader);
                 if (dt.size_bits == 0) {
-                    var max_val: u32 = 0;
+                    var max_val: u32 = 1;
                     for (dt.kind.enumeration) |f| {
                         max_val = @max(max_val, f.value);
                     }
-                    dt.size_bits = std.math.log2_int_ceil(u32, max_val);
+                    dt.size_bits = std.math.log2_int(u32, max_val) + 1;
                 }
             },
         }
