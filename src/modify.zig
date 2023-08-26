@@ -579,9 +579,11 @@ const ModifyTypeOp = enum {
     set_fallback_name,
     set_desc,
     set_bits,
+    set_access,
     inner,
     field,
     delete_field,
+    merge_field,
 };
 const modify_type_ops = std.ComptimeStringMap(ModifyTypeOp, .{
     .{ "--", .nop },
@@ -590,9 +592,11 @@ const modify_type_ops = std.ComptimeStringMap(ModifyTypeOp, .{
     .{ "set-fallback-name", .set_fallback_name },
     .{ "set-desc", .set_desc },
     .{ "set-bits", .set_bits },
+    .{ "set-access", .set_access },
     .{ "inner", .inner },
     .{ "field", .field },
     .{ "delete-field", .delete_field },
+    .{ "merge-field", .merge_field },
 });
 fn typeModify(action_list: *TypeActionList, group: *PeripheralGroup, types: []DataType, comptime T: type, reader: *sx.Reader(T)) E(T)!void {
     while (try reader.open()) {
@@ -605,9 +609,11 @@ fn typeModify(action_list: *TypeActionList, group: *PeripheralGroup, types: []Da
             .set_fallback_name => try typeSetFallbackName(group, types, T, reader),
             .set_desc => try typeSetDescription(group, types, T, reader),
             .set_bits => try typeSetBits(types, T, reader),
+            .set_access => try typeSetAccess(types, T, reader),
             .inner => try typeModifyInner(action_list, group, types, T, reader),
             .field => try fieldModify(action_list, group, types, T, reader),
-            .delete_field => try fieldDelete(action_list, group, types, T, reader),
+            .delete_field => try fieldDelete(types, T, reader),
+            .merge_field => try fieldMerge(group, types, T, reader),
         }
         try reader.requireClose();
     }
@@ -638,6 +644,18 @@ fn typeSetBits(types: []DataType, comptime T: type, reader: *sx.Reader(T)) E(T)!
     const bits = try reader.requireAnyInt(u32, 0);
     for (types) |*dt| {
         dt.size_bits = bits;
+    }
+}
+
+fn typeSetAccess(types: []DataType, comptime T: type, reader: *sx.Reader(T)) E(T)!void {
+    const access = try reader.requireAnyEnum(DataType.AccessPolicy);
+    for (types) |*dt| {
+        switch (dt.kind) {
+            .register => |*info| {
+                info.access = access;
+            },
+            else => {},
+        }
     }
 }
 
@@ -693,9 +711,7 @@ fn fieldModify(action_list: *TypeActionList, group: *PeripheralGroup, types: []D
     }
 }
 
-fn fieldDelete(action_list: *TypeActionList, group: *PeripheralGroup, types: []DataType, comptime T: type, reader: *sx.Reader(T)) E(T)!void {
-    _ = group;
-    _ = action_list;
+fn fieldDelete(types: []DataType, comptime T: type, reader: *sx.Reader(T)) E(T)!void {
     const field_pattern = try reader.requireAnyString();
 
     for (types) |*dt| {
@@ -736,6 +752,92 @@ fn fieldDelete(action_list: *TypeActionList, group: *PeripheralGroup, types: []D
                     }
                 }
                 dt.kind = .{ .enumeration = fields.items };
+            },
+        }
+    }
+}
+
+fn fieldMerge(group: *PeripheralGroup, types: []DataType, comptime T: type, reader: *sx.Reader(T)) E(T)!void {
+    const field_pattern = try group.gpa.dupe(u8, try reader.requireAnyString());
+    defer group.gpa.free(field_pattern);
+
+    const new_field_name = try group.maybeDupe(try reader.requireAnyString());
+    const new_type_id = try typeCreateOrRef(group, T, reader);
+
+    const new_dt = group.data_types.items[new_type_id];
+
+    for (types) |*dt| {
+        switch (dt.kind) {
+            .unsigned, .boolean, .external, .register, .collection, .alternative, .enumeration => {},
+            .structure => |const_fields| {
+                const base_field = loop: for (const_fields) |f| {
+                    if (nameMatchesPattern(f.name, field_pattern)) break :loop f;
+                } else continue;
+                const offset_bytes = base_field.offset_bytes;
+                const end_offset_bytes = offset_bytes + (new_dt.size_bits + 7) / 8;
+
+                var fields = try std.ArrayList(DataType.StructField).initCapacity(command_alloc, const_fields.len);
+
+                var default_value: u64 = 0;
+                for (const_fields) |f| {
+                    const size_bytes = (group.data_types.items[f.data_type].size_bits + 7) / 8;
+                    if (f.offset_bytes < end_offset_bytes and f.offset_bytes + size_bytes > offset_bytes) {
+                        var default = f.default_value;
+                        if (f.offset_bytes > offset_bytes) {
+                            default = default << @intCast((f.offset_bytes - offset_bytes) * 8);
+                        } else if (f.offset_bytes < offset_bytes) {
+                            default = default >> @intCast((offset_bytes - f.offset_bytes) * 8);
+                        }
+                        default_value |= default;
+                    } else {
+                        fields.appendAssumeCapacity(f);
+                    }
+                }
+
+                fields.appendAssumeCapacity(.{
+                    .name = new_field_name,
+                    .description = base_field.description,
+                    .offset_bytes = offset_bytes,
+                    .default_value = default_value,
+                    .data_type = new_type_id,
+                });
+
+                dt.kind = .{ .structure = fields.items };
+            },
+            .bitpack => |const_fields| {
+                const base_field = loop: for (const_fields) |f| {
+                    if (nameMatchesPattern(f.name, field_pattern)) break :loop f;
+                } else continue;
+                const offset_bits = base_field.offset_bits;
+                const end_offset_bits = offset_bits + new_dt.size_bits;
+
+                var fields = try std.ArrayList(DataType.PackedField).initCapacity(command_alloc, const_fields.len);
+
+                var default_value: u64 = 0;
+                for (const_fields) |f| {
+                    const size_bits = group.data_types.items[f.data_type].size_bits;
+                    if (f.offset_bits < end_offset_bits and f.offset_bits + size_bits > offset_bits) {
+                        var default = f.default_value;
+                        if (f.offset_bits > offset_bits) {
+                            default = default << @intCast(f.offset_bits - offset_bits);
+                        } else if (f.offset_bits < offset_bits) {
+                            default = default >> @intCast(offset_bits - f.offset_bits);
+                        }
+                        default_value |= default;
+                    } else {
+                        fields.appendAssumeCapacity(f);
+                    }
+                }
+
+                fields.appendAssumeCapacity(.{
+                    .name = new_field_name,
+                    .description = base_field.description,
+                    .offset_bits = offset_bits,
+                    .default_value = default_value,
+                    .data_type = new_type_id,
+                });
+
+                dt.kind = .{ .bitpack = fields.items };
             },
         }
     }
