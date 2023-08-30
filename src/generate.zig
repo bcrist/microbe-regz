@@ -263,7 +263,7 @@ fn writeDataTypeAssign(group: PeripheralGroup, data_type: DataType, reg_types_pr
                 }
             } else try writer.print(" = @enumFromInt({})", .{ value });
         },
-        .structure, .bitpack => {
+        .bitpack => {
             try writer.print(" = @bitCast(0x{X})", .{ value });
         },
         .external => |info| {
@@ -280,7 +280,7 @@ fn writeDataTypeAssign(group: PeripheralGroup, data_type: DataType, reg_types_pr
                 try writer.print(", 0x{X})", .{ value });
             }
         },
-        .register, .collection, .alternative => {},
+        .register, .collection, .alternative, .structure => {},
     }
 }
 
@@ -305,9 +305,9 @@ pub fn writePeripheralInstances(db: Database, writer: anytype) !void {
             if (peripheral.deleted) continue;
 
             try writeComment(peripheral.description, writer);
-            try writer.print("pub const {s} = @as(*volatile ", .{ std.zig.fmtId(peripheral.name) });
+            try writer.print("pub const {s}: *volatile ", .{ std.zig.fmtId(peripheral.name) });
             try writeDataTypeRef(group, group.data_types.items[peripheral.data_type], types_prefix, "reg_types/", writer);
-            try writer.print(", @ptrFromInt(0x{X}));\n", .{ peripheral.base_address });
+            try writer.print(" = @ptrFromInt(0x{X});\n", .{ peripheral.base_address });
         }
     }
 }

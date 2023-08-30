@@ -23,12 +23,14 @@ const GroupOp = enum {
     peripheral,
     create_peripheral,
     create_type,
+    copy_type,
 };
 const group_ops = std.ComptimeStringMap(GroupOp, .{
     .{ "--", .nop },
     .{ "peripheral", .peripheral },
     .{ "create-peripheral", .create_peripheral },
     .{ "create-type", .create_type },
+    .{ "copy-type", .copy_type },
 });
 pub fn handleSx(db: *Database, comptime T: type, reader: *sx.Reader(T)) E(T)!void {
     defer _ = command_arena.reset(.free_all);
@@ -56,6 +58,7 @@ pub fn handleSx(db: *Database, comptime T: type, reader: *sx.Reader(T)) E(T)!voi
                 },
                 .create_peripheral => try peripheralCreate(group, T, reader),
                 .create_type => try typeCreateNamed(group, T, reader),
+                .copy_type => try typeCopy(group, T, reader),
             }
             try reader.requireClose();
         }
@@ -230,6 +233,17 @@ fn peripheralSetType(group: *PeripheralGroup, peripheral_pattern: []const u8, co
     }
 }
 
+fn typeCopy(group: *PeripheralGroup, comptime T: type, reader: *sx.Reader(T)) E(T)!void {
+    var id = (try typeRef(group, T, reader)) orelse return error.SExpressionSyntaxError;
+    var types: [1]DataType = .{ group.data_types.items[id] };
+    types[0].name = try group.maybeDupe(try reader.requireAnyString());
+
+    var action_list = beginTypeActions();
+    try typeModify(&action_list, group, &types, T, reader);
+    try finishTypeActions(group, &action_list, 0);
+    _ = try group.getOrCreateType(types[0], .{ .dupe_strings = false });
+}
+
 fn typeCreateNamed(group: *PeripheralGroup, comptime T: type, reader: *sx.Reader(T)) E(T)!void {
     const name = try group.maybeDupe(try reader.requireAnyString());
     const desc = try group.maybeDupe(try reader.anyString());
@@ -237,6 +251,10 @@ fn typeCreateNamed(group: *PeripheralGroup, comptime T: type, reader: *sx.Reader
 }
 
 fn typeCreateOrRef(group: *PeripheralGroup, comptime T: type, reader: *sx.Reader(T)) E(T)!DataType.ID {
+    return (try typeRef(group, T, reader)) orelse try typeCreate(group, "", "", T, reader);
+}
+
+fn typeRef(group: *PeripheralGroup, comptime T: type, reader: *sx.Reader(T)) E(T)!?DataType.ID {
     reader.setPeek(true);
     if (try reader.anyString()) |name| {
         reader.setPeek(false);
@@ -248,7 +266,7 @@ fn typeCreateOrRef(group: *PeripheralGroup, comptime T: type, reader: *sx.Reader
         }
     }
     reader.setPeek(false);
-    return typeCreate(group, "", "", T, reader);
+    return null;
 }
 
 const CreateTypeOp = enum {
@@ -264,6 +282,7 @@ const CreateTypeOp = enum {
     structure,
     bitpack,
     enumeration,
+    set_inline,
 };
 const create_type_ops = std.ComptimeStringMap(CreateTypeOp, .{
     .{ "--", .nop },
@@ -278,6 +297,7 @@ const create_type_ops = std.ComptimeStringMap(CreateTypeOp, .{
     .{ "struct", .structure },
     .{ "packed", .bitpack },
     .{ "enum", .enumeration },
+    .{ "inline", .set_inline },
 });
 fn typeCreate(group: *PeripheralGroup, default_name: []const u8, default_desc: []const u8, comptime T: type, reader: *sx.Reader(T)) E(T)!DataType.ID {
     var dt = DataType{
@@ -297,6 +317,7 @@ fn typeCreate(group: *PeripheralGroup, default_name: []const u8, default_desc: [
             .fallback_name => dt.fallback_name = try group.maybeDupe(try reader.requireAnyString()),
             .description => dt.description = try group.maybeDupe(try reader.requireAnyString()),
             .size_bits => dt.size_bits = try reader.requireAnyInt(u32, 0),
+            .set_inline => dt.inline_mode = try reader.requireAnyEnum(DataType.InlineMode),
             .external => {
                 const import = try group.maybeDupe(try reader.requireAnyString());
                 var maybe_from_int = try reader.anyString();
@@ -314,6 +335,7 @@ fn typeCreate(group: *PeripheralGroup, default_name: []const u8, default_desc: [
                 if (dt.size_bits == 0) {
                     dt.size_bits = group.data_types.items[dt.kind.register.data_type].size_bits;
                 }
+                dt.inline_mode = .always;
             },
             .collection => {
                 dt.kind = try typeKindCollection(group, T, reader);
@@ -321,6 +343,7 @@ fn typeCreate(group: *PeripheralGroup, default_name: []const u8, default_desc: [
                     const info = dt.kind.collection;
                     dt.size_bits = ((group.data_types.items[info.data_type].size_bits + 7) / 8) * info.count * 8;
                 }
+                dt.inline_mode = .always;
             },
             .alternative => {
                 dt.kind = try typeKindAlternative(group, T, reader);
@@ -584,6 +607,7 @@ const ModifyTypeOp = enum {
     field,
     delete_field,
     merge_field,
+    create_field,
 };
 const modify_type_ops = std.ComptimeStringMap(ModifyTypeOp, .{
     .{ "--", .nop },
@@ -597,6 +621,7 @@ const modify_type_ops = std.ComptimeStringMap(ModifyTypeOp, .{
     .{ "field", .field },
     .{ "delete-field", .delete_field },
     .{ "merge-field", .merge_field },
+    .{ "create-field", .create_field },
 });
 fn typeModify(action_list: *TypeActionList, group: *PeripheralGroup, types: []DataType, comptime T: type, reader: *sx.Reader(T)) E(T)!void {
     while (try reader.open()) {
@@ -614,6 +639,7 @@ fn typeModify(action_list: *TypeActionList, group: *PeripheralGroup, types: []Da
             .field => try fieldModify(action_list, group, types, T, reader),
             .delete_field => try fieldDelete(types, T, reader),
             .merge_field => try fieldMerge(group, types, T, reader),
+            .create_field => try fieldCreate(group, types, T, reader),
         }
         try reader.requireClose();
     }
@@ -840,6 +866,83 @@ fn fieldMerge(group: *PeripheralGroup, types: []DataType, comptime T: type, read
                 dt.kind = .{ .bitpack = fields.items };
             },
         }
+    }
+}
+
+fn fieldCreate(group: *PeripheralGroup, types: []DataType, comptime T: type, reader: *sx.Reader(T)) E(T)!void {
+    if (types.len == 0) {
+        std.log.err("Expected at least one matching type", .{});
+        return error.SExpressionSyntaxError;
+    }
+
+    switch (types[0].kind) {
+        .bitpack => {
+            const new_field = try parsePackedField(group, 0, T, reader);
+            for (types) |*t| {
+                switch (t.kind) {
+                    .bitpack => |const_fields| {
+                        const fields = try command_alloc.alloc(DataType.PackedField, const_fields.len + 1);
+                        @memcpy(fields.ptr, const_fields);
+                        fields[fields.len - 1] = new_field;
+                        t.kind = .{ .bitpack = fields };
+                    },
+                    else => {
+                        std.log.warn("Can't add a packed field to type '{s}' because it is not a bitpack!", .{ t.zigName() });
+                    },
+                }
+            }
+        },
+        .enumeration => {
+            const new_field = try parseEnumField(group, T, reader);
+            for (types) |*t| {
+                switch (t.kind) {
+                    .enumeration => |const_fields| {
+                        const fields = try command_alloc.alloc(DataType.EnumField, const_fields.len + 1);
+                        @memcpy(fields.ptr, const_fields);
+                        fields[fields.len - 1] = new_field;
+                        t.kind = .{ .enumeration = fields };
+                    },
+                    else => {
+                        std.log.warn("Can't add an enum field to type '{s}' because it is not a enum!", .{ t.zigName() });
+                    },
+                }
+            }
+        },
+        .structure => {
+            const new_field = try parseStructField(group, 0, T, reader);
+            for (types) |*t| {
+                switch (t.kind) {
+                    .structure => |const_fields| {
+                        const fields = try command_alloc.alloc(DataType.StructField, const_fields.len + 1);
+                        @memcpy(fields.ptr, const_fields);
+                        fields[fields.len - 1] = new_field;
+                        t.kind = .{ .structure = fields };
+                    },
+                    else => {
+                        std.log.warn("Can't add a struct field to type '{s}' because it is not a struct!", .{ t.zigName() });
+                    },
+                }
+            }
+        },
+        .alternative => {
+            const new_field = try parseUnionField(group, T, reader);
+            for (types) |*t| {
+                switch (t.kind) {
+                    .alternative => |const_fields| {
+                        const fields = try command_alloc.alloc(DataType.UnionField, const_fields.len + 1);
+                        @memcpy(fields.ptr, const_fields);
+                        fields[fields.len - 1] = new_field;
+                        t.kind = .{ .alternative = fields };
+                    },
+                    else => {
+                        std.log.warn("Can't add a union field to type '{s}' because it is not a union!", .{ t.zigName() });
+                    },
+                }
+            }
+        },
+        .unsigned, .boolean, .external, .register, .collection => {
+            std.log.err("Can't add a field to type '{s}'; expected union, struct, bitpack, or enum!", .{ types[0].zigName() });
+        },
     }
 }
 
