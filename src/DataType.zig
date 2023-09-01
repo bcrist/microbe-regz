@@ -17,6 +17,11 @@ ref_count: u32 = 0,
 pub const Kind = union(enum) {
     unsigned,
     boolean,
+    anyopaque,
+    pointer: struct {
+        data_type: ID,
+        constant: bool,
+    },
     external: struct {
         import: []const u8,
         from_int: ?[]const u8 = null,
@@ -112,8 +117,10 @@ pub fn shouldInline(self: DataType) bool {
 
 pub fn addRef(self: *DataType, group: *PeripheralGroup) void {
     if (self.ref_count == 0 or self.inline_mode == .always) switch (self.kind) {
-        .unsigned, .boolean, .enumeration, .external => {},
-
+        .unsigned, .boolean, .anyopaque, .enumeration, .external => {},
+        .pointer => |info| {
+            group.data_types.items[info.data_type].addRef(group);
+        },
         .register => |info| {
             group.data_types.items[info.data_type].addRef(group);
         },
@@ -170,7 +177,7 @@ fn hash(self: DataType, group: PeripheralGroup) u64 {
     h.update(std.mem.asBytes(&tag));
 
     switch (self.kind) {
-        .unsigned, .boolean => {},
+        .unsigned, .boolean, .anyopaque => {},
         .external => |info| {
             h.update(info.import);
             if (info.from_int) |from_int| {
@@ -179,6 +186,11 @@ fn hash(self: DataType, group: PeripheralGroup) u64 {
             } else {
                 h.update("0");
             }
+        },
+        .pointer => |info| {
+            const dt_hash = hash(group.data_types.items[info.data_type], group);
+            h.update(std.mem.asBytes(&dt_hash));
+            h.update(std.mem.asBytes(&info.constant));
         },
         .register => |info| {
             const dt_hash = hash(group.data_types.items[info.data_type], group);
@@ -250,7 +262,7 @@ fn eql(a: DataType, a_src: PeripheralGroup, b: DataType, b_src: PeripheralGroup)
 
     if (std.meta.activeTag(a.kind) != std.meta.activeTag(b.kind)) return false;
     switch (a.kind) {
-        .unsigned, .boolean => {},
+        .unsigned, .boolean, .anyopaque => {},
         .external => |a_info| {
             const b_info = b.kind.external;
             if (!std.mem.eql(u8, a_info.import, b_info.import)) return false;
@@ -259,6 +271,11 @@ fn eql(a: DataType, a_src: PeripheralGroup, b: DataType, b_src: PeripheralGroup)
                     if (!std.mem.eql(u8, a_from_int, b_from_int)) return false;
                 } else return false;
             } else if (b_info.from_int != null) return false;
+        },
+        .pointer => |a_info| {
+            const b_info = b.kind.pointer;
+            if (a_info.constant != b_info.constant) return false;
+            if (!eql(a_src.data_types.items[a_info.data_type], a_src, b_src.data_types.items[b_info.data_type], b_src)) return false;
         },
         .register => |a_info| {
             const b_info = b.kind.register;

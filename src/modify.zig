@@ -277,6 +277,7 @@ const CreateTypeOp = enum {
     size_bits,
     external,
     register,
+    pointer,
     collection,
     alternative,
     structure,
@@ -292,6 +293,7 @@ const create_type_ops = std.ComptimeStringMap(CreateTypeOp, .{
     .{ "bits", .size_bits },
     .{ "ext", .external },
     .{ "reg", .register },
+    .{ "pointer", .pointer },
     .{ "array", .collection },
     .{ "union", .alternative },
     .{ "struct", .structure },
@@ -334,6 +336,13 @@ fn typeCreate(group: *PeripheralGroup, default_name: []const u8, default_desc: [
                 dt.kind = try typeKindRegister(group, T, reader);
                 if (dt.size_bits == 0) {
                     dt.size_bits = group.data_types.items[dt.kind.register.data_type].size_bits;
+                }
+                dt.inline_mode = .always;
+            },
+            .pointer => {
+                dt.kind = try typeKindPointer(group, T, reader);
+                if (dt.size_bits == 0) {
+                    dt.size_bits = 32;
                 }
                 dt.inline_mode = .always;
             },
@@ -398,6 +407,15 @@ fn typeKindRegister(group: *PeripheralGroup, comptime T: type, reader: *sx.Reade
     return .{ .register = .{
         .access = access,
         .data_type = inner_type,
+    }};
+}
+
+fn typeKindPointer(group: *PeripheralGroup, comptime T: type, reader: *sx.Reader(T)) E(T)!DataType.Kind {
+    const constant = try reader.string("const");
+    const inner_type = try typeCreateOrRef(group, T, reader);
+    return .{ .pointer = .{
+        .data_type = inner_type,
+        .constant = constant,
     }};
 }
 
@@ -742,7 +760,7 @@ fn fieldDelete(types: []DataType, comptime T: type, reader: *sx.Reader(T)) E(T)!
 
     for (types) |*dt| {
         switch (dt.kind) {
-            .unsigned, .boolean, .external, .register, .collection => {},
+            .unsigned, .boolean, .anyopaque, .external, .register, .collection, .pointer => {},
             .alternative => |const_fields| {
                 var fields = try std.ArrayList(DataType.UnionField).initCapacity(command_alloc, const_fields.len);
                 for (const_fields) |f| {
@@ -794,7 +812,7 @@ fn fieldMerge(group: *PeripheralGroup, types: []DataType, comptime T: type, read
 
     for (types) |*dt| {
         switch (dt.kind) {
-            .unsigned, .boolean, .external, .register, .collection, .alternative, .enumeration => {},
+            .unsigned, .boolean, .anyopaque, .external, .register, .collection, .alternative, .enumeration, .pointer => {},
             .structure => |const_fields| {
                 const base_field = loop: for (const_fields) |f| {
                     if (nameMatchesPattern(f.name, field_pattern)) break :loop f;
@@ -940,7 +958,7 @@ fn fieldCreate(group: *PeripheralGroup, types: []DataType, comptime T: type, rea
                 }
             }
         },
-        .unsigned, .boolean, .external, .register, .collection => {
+        .unsigned, .boolean, .anyopaque, .external, .register, .collection, .pointer => {
             std.log.err("Can't add a field to type '{s}'; expected union, struct, bitpack, or enum!", .{ types[0].zigName() });
         },
     }
@@ -1092,7 +1110,10 @@ fn collectInnerTypes(action_list: *TypeActionList, group: *const PeripheralGroup
     var types = std.AutoArrayHashMap(DataType.ID, DataType).init(command_alloc);
 
     for (outer_types) |dt| switch (dt.kind) {
-        .unsigned, .boolean, .external, .alternative, .structure, .bitpack, .enumeration => {},
+        .unsigned, .boolean, .anyopaque, .external, .alternative, .structure, .bitpack, .enumeration => {},
+        .pointer => |info| {
+            try types.put(info.data_type, group.data_types.items[info.data_type]);
+        },
         .register => |info| {
             try types.put(info.data_type, group.data_types.items[info.data_type]);
         },
@@ -1104,7 +1125,14 @@ fn collectInnerTypes(action_list: *TypeActionList, group: *const PeripheralGroup
     // types must not be modified after this point; pointers to data within must remain stable until the TypeActionList is processed.
 
     for (outer_types) |*dt| switch (dt.kind) {
-        .unsigned, .boolean, .external, .alternative, .structure, .bitpack, .enumeration => {},
+        .unsigned, .boolean, .anyopaque, .external, .alternative, .structure, .bitpack, .enumeration => {},
+        .pointer => |*info| {
+            const id_ptr = types.getKeyPtr(info.data_type).?;
+            try action_list.append(command_alloc, .{ .set_type = .{
+                .src_type_id = id_ptr,
+                .dest_type_id = &info.data_type,
+            }});
+        },
         .register => |*info| {
             const id_ptr = types.getKeyPtr(info.data_type).?;
             try action_list.append(command_alloc, .{ .set_type = .{
@@ -1144,7 +1172,7 @@ fn collectMatchingFields(types: []DataType, field_pattern: []const u8) ![]FieldR
     var refs = std.ArrayList(FieldRef).init(command_alloc);
 
     for (types) |*dt| switch (dt.kind) {
-        .unsigned, .boolean, .external, .register, .collection => {},
+        .unsigned, .boolean, .anyopaque, .external, .register, .collection, .pointer => {},
         .alternative => |const_fields| {
             const fields = try command_alloc.dupe(DataType.UnionField, const_fields);
             for (fields) |*f| {
@@ -1234,10 +1262,17 @@ const CollectMatchingRegisterTypesContext = struct {
 
     pub fn populate(self: *@This(), data_type: DataType, found_named_field: bool) !void {
         switch (data_type.kind) {
-            .unsigned, .boolean, .external, .enumeration, .bitpack => {},
+            .unsigned, .boolean, .anyopaque, .external, .enumeration, .bitpack => {},
             .register => |info| {
                 if (found_named_field) {
                     try self.reg_types.put(info.data_type, self.group.data_types.items[info.data_type]);
+                }
+            },
+            .pointer => |info| {
+                const result = try self.containers.getOrPut(info.data_type);
+                if (!result.found_existing) {
+                    result.value_ptr.* = self.group.data_types.items[info.data_type];
+                    try self.populate(result.value_ptr.*, found_named_field);
                 }
             },
             .collection => |info| {
@@ -1269,7 +1304,7 @@ const CollectMatchingRegisterTypesContext = struct {
     // pointers to data within must remain stable until the TypeActionList is processed.
     pub fn addContainerActions(self: *@This(), data_type: *DataType, found_named_field: bool) std.mem.Allocator.Error!void {
         switch (data_type.kind) {
-            .unsigned, .boolean, .external, .enumeration, .bitpack => {},
+            .unsigned, .boolean, .anyopaque, .external, .enumeration, .bitpack => {},
             .register => |*info| {
                 if (found_named_field) {
                     const id_ptr = self.reg_types.getKeyPtr(info.data_type).?;
@@ -1278,6 +1313,21 @@ const CollectMatchingRegisterTypesContext = struct {
                         .dest_type_id = &info.data_type,
                     }});
                 }
+            },
+            .pointer => |*info| {
+                const entry = self.containers.getEntry(info.data_type).?;
+
+                try self.action_list.append(command_alloc, .{ .set_type = .{
+                    .src_type_id = entry.key_ptr,
+                    .dest_type_id = &info.data_type,
+                }});
+
+                try self.action_list.append(command_alloc, .{ .resolve_type = .{
+                    .data_type = entry.value_ptr,
+                    .type_id = entry.key_ptr,
+                }});
+
+                try self.addContainerActions(entry.value_ptr, found_named_field);
             },
             .collection => |*info| {
                 const entry = self.containers.getEntry(info.data_type).?;

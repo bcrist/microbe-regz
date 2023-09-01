@@ -88,12 +88,19 @@ pub fn getOrCreateType(self: *PeripheralGroup, dt: DataType, options: GetOrCreat
     }
 
     copy.kind = switch (dt.kind) {
-        .unsigned, .boolean => dt.kind,
+        .unsigned, .boolean, .anyopaque => dt.kind,
         .external => |info| .{ .external = .{
             .import = if (options.dupe_strings) try self.maybeDupe(info.import) else info.import,
             .from_int = if (info.from_int) |from_int| blk: {
                 break :blk if (options.dupe_strings) try self.maybeDupe(from_int) else from_int;
             } else null,
+        }},
+        .pointer => |info| .{ .pointer = .{
+            .data_type = try self.getOrCreateType(key.group.data_types.items[info.data_type], .{
+                .dupe_strings = false,
+                .src_group = key.group,
+            }),
+            .constant = info.constant,
         }},
         .register => |info| .{ .register = .{
             .data_type = try self.getOrCreateType(key.group.data_types.items[info.data_type], .{
@@ -214,7 +221,7 @@ pub fn getOrCreateRegisterType(self: *PeripheralGroup, inner: DataType.ID, acces
             .access = access,
         }},
         .inline_mode = .always,
-    }, .{});
+    }, .{ .dupe_strings = false });
 }
 
 pub fn getOrCreateArrayType(self: *PeripheralGroup, inner: DataType.ID, count: u32) !DataType.ID {
@@ -227,7 +234,19 @@ pub fn getOrCreateArrayType(self: *PeripheralGroup, inner: DataType.ID, count: u
             .data_type = inner,
         }},
         .inline_mode = .always,
-    }, .{});
+    }, .{ .dupe_strings = false });
+}
+
+pub fn getOrCreatePointer(self: *PeripheralGroup, inner: DataType.ID, constant: bool) !DataType.ID {
+    return self.getOrCreateType(.{
+        .name = "",
+        .size_bits = 32,
+        .kind = .{ .pointer = .{
+            .data_type = inner,
+            .constant = constant,
+        }},
+        .inline_mode = .always,
+    }, .{ .dupe_strings = false });
 }
 
 pub fn getOrCreateUnsigned(self: *PeripheralGroup, bits: u32) !DataType.ID {
@@ -245,6 +264,15 @@ pub fn getOrCreateBool(self: *PeripheralGroup) !DataType.ID {
         .name = "bool",
         .size_bits = 1,
         .kind = .boolean,
+        .inline_mode = .always,
+    }, .{ .dupe_strings = false });
+}
+
+pub fn getOrCreateAnyopaque(self: *PeripheralGroup) !DataType.ID {
+    return self.getOrCreateType(.{
+        .name = "anyopaque",
+        .size_bits = 0,
+        .kind = .anyopaque,
         .inline_mode = .always,
     }, .{ .dupe_strings = false });
 }
@@ -273,7 +301,50 @@ pub fn findType(self: *PeripheralGroup, name: []const u8) !?DataType.ID {
         return try self.getOrCreateBool();
     }
 
-    // TODO [] prefix for arrays
+    if (std.mem.startsWith(u8, name, "*")) {
+        var remaining = name[1..];
+        while (remaining.len > 0 and remaining[0] == ' ') {
+            remaining = remaining[1..];
+        }
+        var constant = false;
+        if (std.mem.startsWith(u8, remaining, "const ")) {
+            remaining = remaining[6..];
+            constant = true;
+        }
+        const base = (try self.findType(remaining)) orelse return null;
+        return try self.getOrCreatePointer(base, constant);
+    }
+
+    if (std.mem.startsWith(u8, name, "[")) {
+        var remaining = name[1..];
+        while (remaining.len > 0 and remaining[0] == ' ') {
+            remaining = remaining[1..];
+        }
+
+        const end = for (0.., remaining) |i, ch| {
+            if (ch == ' ' or ch == ']') break i;
+        } else remaining.len;
+        const count = std.fmt.parseUnsigned(u32, remaining[0..end], 0) catch return null;
+
+        remaining = remaining[end..];
+        while (remaining.len > 0 and remaining[0] == ' ') {
+            remaining = remaining[1..];
+        }
+
+        if (remaining.len == 0 or remaining[0] != ']') return null;
+        remaining = remaining[1..];
+
+        while (remaining.len > 0 and remaining[0] == ' ') {
+            remaining = remaining[1..];
+        }
+
+        const base = (try self.findType(remaining)) orelse return null;
+        return try self.getOrCreateArrayType(base, count);
+    }
+
+    if (std.mem.eql(u8, name, "anyopaque")) {
+        return try self.getOrCreateAnyopaque();
+    }
 
     return null;
 }

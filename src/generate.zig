@@ -135,6 +135,7 @@ fn writeDataTypeImpl(group: PeripheralGroup, data_type: DataType, reg_types_pref
     switch (data_type.kind) {
         .unsigned => try writer.print("u{}", .{ data_type.size_bits }),
         .boolean => try writer.writeAll("bool"),
+        .anyopaque => try writer.writeAll("anyopaque"),
         .external => |info| {
             var prefix = import_prefix;
             if (!std.mem.endsWith(u8, info.import, ".zig")) {
@@ -148,6 +149,13 @@ fn writeDataTypeImpl(group: PeripheralGroup, data_type: DataType, reg_types_pref
             while (iter.next()) |tok| {
                 try writer.print(".{s}", .{ std.zig.fmtId(tok) });
             }
+        },
+        .pointer => |info| {
+            try writer.writeByte('*');
+            if (info.constant) {
+                try writer.writeAll("const ");
+            }
+            try writeDataTypeRef(group, group.data_types.items[info.data_type], reg_types_prefix, import_prefix, writer);
         },
         .register => |info| {
              try writer.writeAll("Mmio(");
@@ -263,6 +271,9 @@ fn writeDataTypeAssign(group: PeripheralGroup, data_type: DataType, reg_types_pr
                 }
             } else try writer.print(" = @enumFromInt({})", .{ value });
         },
+        .pointer => {
+            try writer.print(" = @ptrFromInt(0x{X})", .{ value });
+        },
         .bitpack => {
             try writer.print(" = @bitCast(0x{X})", .{ value });
         },
@@ -280,7 +291,7 @@ fn writeDataTypeAssign(group: PeripheralGroup, data_type: DataType, reg_types_pr
                 try writer.print(", 0x{X})", .{ value });
             }
         },
-        .register, .collection, .alternative, .structure => {},
+        .register, .collection, .alternative, .structure, .anyopaque => {},
     }
 }
 
