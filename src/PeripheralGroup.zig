@@ -101,6 +101,7 @@ pub fn getOrCreateType(self: *PeripheralGroup, dt: DataType, options: GetOrCreat
                 .src_group = key.group,
             }),
             .constant = info.constant,
+            .allow_zero = info.allow_zero,
         }},
         .register => |info| .{ .register = .{
             .data_type = try self.getOrCreateType(key.group.data_types.items[info.data_type], .{
@@ -237,13 +238,14 @@ pub fn getOrCreateArrayType(self: *PeripheralGroup, inner: DataType.ID, count: u
     }, .{ .dupe_strings = false });
 }
 
-pub fn getOrCreatePointer(self: *PeripheralGroup, inner: DataType.ID, constant: bool) !DataType.ID {
+pub fn getOrCreatePointer(self: *PeripheralGroup, inner: DataType.ID, allow_zero: bool, constant: bool) !DataType.ID {
     return self.getOrCreateType(.{
         .name = "",
         .size_bits = 32,
         .kind = .{ .pointer = .{
             .data_type = inner,
             .constant = constant,
+            .allow_zero = allow_zero,
         }},
         .inline_mode = .always,
     }, .{ .dupe_strings = false });
@@ -306,13 +308,21 @@ pub fn findType(self: *PeripheralGroup, name: []const u8) !?DataType.ID {
         while (remaining.len > 0 and remaining[0] == ' ') {
             remaining = remaining[1..];
         }
+
+        var allow_zero = false;
+        if (std.mem.startsWith(u8, remaining, "allowzero ")) {
+            remaining = remaining["allowzero ".len ..];
+            allow_zero = true;
+        }
+
         var constant = false;
         if (std.mem.startsWith(u8, remaining, "const ")) {
-            remaining = remaining[6..];
+            remaining = remaining["const ".len ..];
             constant = true;
         }
+
         const base = (try self.findType(remaining)) orelse return null;
-        return try self.getOrCreatePointer(base, constant);
+        return try self.getOrCreatePointer(base, allow_zero, constant);
     }
 
     if (std.mem.startsWith(u8, name, "[")) {

@@ -411,11 +411,13 @@ fn typeKindRegister(group: *PeripheralGroup, comptime T: type, reader: *sx.Reade
 }
 
 fn typeKindPointer(group: *PeripheralGroup, comptime T: type, reader: *sx.Reader(T)) E(T)!DataType.Kind {
+    const allow_zero = try reader.string("allowzero");
     const constant = try reader.string("const");
     const inner_type = try typeCreateOrRef(group, T, reader);
     return .{ .pointer = .{
         .data_type = inner_type,
         .constant = constant,
+        .allow_zero = allow_zero,
     }};
 }
 

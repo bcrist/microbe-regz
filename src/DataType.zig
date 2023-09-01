@@ -21,6 +21,7 @@ pub const Kind = union(enum) {
     pointer: struct {
         data_type: ID,
         constant: bool,
+        allow_zero: bool,
     },
     external: struct {
         import: []const u8,
@@ -191,6 +192,7 @@ fn hash(self: DataType, group: PeripheralGroup) u64 {
             const dt_hash = hash(group.data_types.items[info.data_type], group);
             h.update(std.mem.asBytes(&dt_hash));
             h.update(std.mem.asBytes(&info.constant));
+            h.update(std.mem.asBytes(&info.allow_zero));
         },
         .register => |info| {
             const dt_hash = hash(group.data_types.items[info.data_type], group);
@@ -275,6 +277,7 @@ fn eql(a: DataType, a_src: PeripheralGroup, b: DataType, b_src: PeripheralGroup)
         .pointer => |a_info| {
             const b_info = b.kind.pointer;
             if (a_info.constant != b_info.constant) return false;
+            if (a_info.allow_zero != b_info.allow_zero) return false;
             if (!eql(a_src.data_types.items[a_info.data_type], a_src, b_src.data_types.items[b_info.data_type], b_src)) return false;
         },
         .register => |a_info| {

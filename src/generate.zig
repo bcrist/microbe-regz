@@ -152,6 +152,9 @@ fn writeDataTypeImpl(group: PeripheralGroup, data_type: DataType, reg_types_pref
         },
         .pointer => |info| {
             try writer.writeByte('*');
+            if (info.allow_zero) {
+                try writer.writeAll("allowzero ");
+            }
             if (info.constant) {
                 try writer.writeAll("const ");
             }
@@ -272,10 +275,22 @@ fn writeDataTypeAssign(group: PeripheralGroup, data_type: DataType, reg_types_pr
             } else try writer.print(" = @enumFromInt({})", .{ value });
         },
         .pointer => {
-            try writer.print(" = @ptrFromInt(0x{X})", .{ value });
+            try writer.writeAll(" = @ptrFromInt(");
+            if (value > 9) {
+                try writer.print("0x{X}", .{ value });
+            } else {
+                try writer.print("{}", .{ value });
+            }
+            try writer.writeByte(')');
         },
         .bitpack => {
-            try writer.print(" = @bitCast(0x{X})", .{ value });
+            try writer.writeAll(" = @bitCast(");
+            if (value > 9) {
+                try writer.print("0x{X}", .{ value });
+            } else {
+                try writer.print("{}", .{ value });
+            }
+            try writer.writeByte(')');
         },
         .external => |info| {
             if (info.from_int) |from_int| {
@@ -284,12 +299,17 @@ fn writeDataTypeAssign(group: PeripheralGroup, data_type: DataType, reg_types_pr
                     try writeDataTypeRef(group, data_type, reg_types_prefix, import_prefix, writer);
                 }
                 try writer.writeAll(from_int);
-                try writer.print("0x{X})", .{ value });
             } else {
                 try writer.writeAll(" = @import(\"chip_util\").fromInt(");
                 try writeDataTypeRef(group, data_type, reg_types_prefix, import_prefix, writer);
-                try writer.print(", 0x{X})", .{ value });
+                try writer.writeAll(", ");
             }
+            if (value > 9) {
+                try writer.print("0x{X}", .{ value });
+            } else {
+                try writer.print("{}", .{ value });
+            }
+            try writer.writeByte(')');
         },
         .register, .collection, .alternative, .structure, .anyopaque => {},
     }
