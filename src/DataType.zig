@@ -16,6 +16,7 @@ ref_count: u32 = 0,
 
 pub const Kind = union(enum) {
     unsigned,
+    signed,
     boolean,
     anyopaque,
     pointer: struct {
@@ -91,6 +92,7 @@ pub fn zigName(self: *const DataType) []const u8 {
 pub fn isPackable(self: *DataType) bool {
     return switch (self.kind) {
         .unsigned,
+        .signed,
         .boolean,
         .enumeration,
         .bitpack,
@@ -118,7 +120,7 @@ pub fn shouldInline(self: DataType) bool {
 
 pub fn addRef(self: *DataType, group: *PeripheralGroup) void {
     if (self.ref_count == 0 or self.inline_mode == .always) switch (self.kind) {
-        .unsigned, .boolean, .anyopaque, .enumeration, .external => {},
+        .unsigned, .signed, .boolean, .anyopaque, .enumeration, .external => {},
         .pointer => |info| {
             group.data_types.items[info.data_type].addRef(group);
         },
@@ -178,7 +180,7 @@ fn hash(self: DataType, group: PeripheralGroup) u64 {
     h.update(std.mem.asBytes(&tag));
 
     switch (self.kind) {
-        .unsigned, .boolean, .anyopaque => {},
+        .unsigned, .signed, .boolean, .anyopaque => {},
         .external => |info| {
             h.update(info.import);
             if (info.from_int) |from_int| {
@@ -264,7 +266,7 @@ fn eql(a: DataType, a_src: PeripheralGroup, b: DataType, b_src: PeripheralGroup)
 
     if (std.meta.activeTag(a.kind) != std.meta.activeTag(b.kind)) return false;
     switch (a.kind) {
-        .unsigned, .boolean, .anyopaque => {},
+        .unsigned, .signed, .boolean, .anyopaque => {},
         .external => |a_info| {
             const b_info = b.kind.external;
             if (!std.mem.eql(u8, a_info.import, b_info.import)) return false;

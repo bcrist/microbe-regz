@@ -134,6 +134,7 @@ fn writeDataTypeRef(group: PeripheralGroup, data_type: DataType, reg_types_prefi
 fn writeDataTypeImpl(group: PeripheralGroup, data_type: DataType, reg_types_prefix: []const u8, import_prefix: []const u8, writer: anytype) @TypeOf(writer).Error!void {
     switch (data_type.kind) {
         .unsigned => try writer.print("u{}", .{ data_type.size_bits }),
+        .signed => try writer.print("i{}", .{ data_type.size_bits }),
         .boolean => try writer.writeAll("bool"),
         .anyopaque => try writer.writeAll("anyopaque"),
         .external => |info| {
@@ -268,6 +269,9 @@ fn writeDataTypeAssign(group: PeripheralGroup, data_type: DataType, reg_types_pr
             } else {
                 try writer.print(" = {}", .{ value });
             }
+        },
+        .signed => {
+            try writer.print(" = {}", .{ value });
         },
         .boolean => {
             try writer.writeAll(if (value == 0) " = false" else " = true");

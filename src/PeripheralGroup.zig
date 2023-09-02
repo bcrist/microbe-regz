@@ -88,7 +88,7 @@ pub fn getOrCreateType(self: *PeripheralGroup, dt: DataType, options: GetOrCreat
     }
 
     copy.kind = switch (dt.kind) {
-        .unsigned, .boolean, .anyopaque => dt.kind,
+        .unsigned, .signed, .boolean, .anyopaque => dt.kind,
         .external => |info| .{ .external = .{
             .import = if (options.dupe_strings) try self.maybeDupe(info.import) else info.import,
             .from_int = if (info.from_int) |from_int| blk: {
@@ -261,6 +261,16 @@ pub fn getOrCreateUnsigned(self: *PeripheralGroup, bits: u32) !DataType.ID {
     }, .{});
 }
 
+pub fn getOrCreateSigned(self: *PeripheralGroup, bits: u32) !DataType.ID {
+    var name_buf: [64]u8 = undefined;
+    return self.getOrCreateType(.{
+        .name = try std.fmt.bufPrint(&name_buf, "i{}", .{ bits }),
+        .size_bits = bits,
+        .kind = .signed,
+        .inline_mode = .always,
+    }, .{});
+}
+
 pub fn getOrCreateBool(self: *PeripheralGroup) !DataType.ID {
     return self.getOrCreateType(.{
         .name = "bool",
@@ -296,6 +306,12 @@ pub fn findType(self: *PeripheralGroup, name: []const u8) !?DataType.ID {
     if (std.mem.startsWith(u8, name, "u")) {
         if (std.fmt.parseInt(u32, name[1..], 10)) |bits| {
             return try self.getOrCreateUnsigned(bits);
+        } else |_| {}
+    }
+
+    if (std.mem.startsWith(u8, name, "i")) {
+        if (std.fmt.parseInt(u32, name[1..], 10)) |bits| {
+            return try self.getOrCreateSigned(bits);
         } else |_| {}
     }
 
