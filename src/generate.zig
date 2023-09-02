@@ -200,6 +200,12 @@ fn writeDataTypeImpl(group: PeripheralGroup, data_type: DataType, reg_types_pref
                 if (field.description.len > 0) try writer.writeByte('\n');
                 offset_bytes += (field_data_type.size_bits + 7) / 8;
             }
+            if (offset_bytes < (data_type.size_bits + 7) / 8) {
+                try writer.print("_reserved_{x}: [{}]u8 = undefined,\n", .{
+                    offset_bytes,
+                    (data_type.size_bits + 7) / 8 - offset_bytes,
+                });
+            }
             try writer.writeAll("}");
         },
         .bitpack => |fields| {

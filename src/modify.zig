@@ -123,6 +123,7 @@ const PeripheralOp = enum {
     @"type",
     register,
     set_type,
+    set_base_address,
 };
 const peripheral_ops = std.ComptimeStringMap(PeripheralOp, .{
     .{ "--", .nop },
@@ -132,6 +133,7 @@ const peripheral_ops = std.ComptimeStringMap(PeripheralOp, .{
     .{ "type", .@"type" },
     .{ "reg", .register },
     .{ "set-type", .set_type },
+    .{ "set-base", .set_base_address },
 });
 fn peripheralModify(db: *Database, original_group: *PeripheralGroup, comptime T: type, reader: *sx.Reader(T)) E(T)!void {
     const peripheral_pattern = try db.gpa.dupe(u8, try reader.requireAnyString());
@@ -151,6 +153,7 @@ fn peripheralModify(db: *Database, original_group: *PeripheralGroup, comptime T:
             .@"type" => try peripheralTypeModify(group, peripheral_pattern, T, reader),
             .register => try peripheralRegisterModify(group, peripheral_pattern, T, reader),
             .set_type => try peripheralSetType(group, peripheral_pattern, T, reader),
+            .set_base_address => try peripheralSetBaseAddress(group, peripheral_pattern, T, reader),
         }
         try reader.requireClose();
     }
@@ -233,6 +236,48 @@ fn peripheralSetType(group: *PeripheralGroup, peripheral_pattern: []const u8, co
     }
 }
 
+fn peripheralSetBaseAddress(group: *PeripheralGroup, peripheral_pattern: []const u8, comptime T: type, reader: *sx.Reader(T)) E(T)!void {
+    const new_base_address = try reader.requireAnyInt(u64, 0);
+
+    if (try reader.string("adjust-offsets")) {
+        var action_list = beginTypeActions();
+
+        var new_data_types = std.ArrayList(DataType.ID).init(command_alloc);
+        var iter = PeripheralIterator.init(group, peripheral_pattern);
+        while (iter.next()) |peripheral| {
+            var dt = group.data_types.items[peripheral.data_type];
+            switch (dt.kind) {
+                .structure => |const_fields| {
+                    var fields = try std.ArrayList(DataType.StructField).initCapacity(command_alloc, const_fields.len);
+                    for (const_fields) |f| {
+                        const addr = peripheral.base_address + f.offset_bytes;
+                        if (addr >= new_base_address) {
+                            var new_field = f;
+                            new_field.offset_bytes = @intCast(addr - new_base_address);
+                            fields.appendAssumeCapacity(new_field);
+                        }
+                    }
+                    dt.kind = .{ .structure = fields.items };
+                },
+                else => {},
+            }
+            try new_data_types.append(try group.getOrCreateType(dt, .{ .dupe_strings = false }));
+        }
+        iter = PeripheralIterator.init(group, peripheral_pattern);
+        var i: usize = 0;
+        while (iter.next()) |peripheral| {
+            peripheral.data_type = new_data_types.items[i];
+            i += 1;
+        }
+        try finishTypeActions(group, &action_list, 0);
+    }
+
+    var iter = PeripheralIterator.init(group, peripheral_pattern);
+    while (iter.next()) |peripheral| {
+        peripheral.base_address = new_base_address;
+    }
+}
+
 fn typeCopy(group: *PeripheralGroup, comptime T: type, reader: *sx.Reader(T)) E(T)!void {
     var id = (try typeRef(group, T, reader)) orelse return error.SExpressionSyntaxError;
     var types: [1]DataType = .{ group.data_types.items[id] };
@@ -288,7 +333,7 @@ const CreateTypeOp = enum {
 const create_type_ops = std.ComptimeStringMap(CreateTypeOp, .{
     .{ "--", .nop },
     .{ "name", .name },
-    .{ "fallback_name", .fallback_name },
+    .{ "fallback-name", .fallback_name },
     .{ "description", .description },
     .{ "bits", .size_bits },
     .{ "ext", .external },
@@ -822,7 +867,7 @@ fn fieldMerge(group: *PeripheralGroup, types: []DataType, comptime T: type, read
                 const offset_bytes = base_field.offset_bytes;
                 const end_offset_bytes = offset_bytes + (new_dt.size_bits + 7) / 8;
 
-                var fields = try std.ArrayList(DataType.StructField).initCapacity(command_alloc, const_fields.len);
+                var fields = try std.ArrayList(DataType.StructField).initCapacity(command_alloc, const_fields.len + 1);
 
                 var default_value: u64 = 0;
                 for (const_fields) |f| {
@@ -830,9 +875,9 @@ fn fieldMerge(group: *PeripheralGroup, types: []DataType, comptime T: type, read
                     if (f.offset_bytes < end_offset_bytes and f.offset_bytes + size_bytes > offset_bytes) {
                         var default = f.default_value;
                         if (f.offset_bytes > offset_bytes) {
-                            default = default << @intCast((f.offset_bytes - offset_bytes) * 8);
+                            default = default << @truncate((f.offset_bytes - offset_bytes) * 8);
                         } else if (f.offset_bytes < offset_bytes) {
-                            default = default >> @intCast((offset_bytes - f.offset_bytes) * 8);
+                            default = default >> @truncate((offset_bytes - f.offset_bytes) * 8);
                         }
                         default_value |= default;
                     } else {
@@ -857,7 +902,7 @@ fn fieldMerge(group: *PeripheralGroup, types: []DataType, comptime T: type, read
                 const offset_bits = base_field.offset_bits;
                 const end_offset_bits = offset_bits + new_dt.size_bits;
 
-                var fields = try std.ArrayList(DataType.PackedField).initCapacity(command_alloc, const_fields.len);
+                var fields = try std.ArrayList(DataType.PackedField).initCapacity(command_alloc, const_fields.len + 1);
 
                 var default_value: u64 = 0;
                 for (const_fields) |f| {
