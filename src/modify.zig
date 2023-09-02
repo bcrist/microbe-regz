@@ -404,7 +404,8 @@ fn typeCreate(group: *PeripheralGroup, default_name: []const u8, default_desc: [
                 if (dt.size_bits == 0) {
                     var max_bits: u32 = 0;
                     for (dt.kind.alternative) |f| {
-                        max_bits = @max(max_bits, group.data_types.items[f.data_type].size_bits);
+                        const bits = group.data_types.items[f.data_type].size_bits;
+                        max_bits = @max(max_bits, bits);
                     }
                     dt.size_bits = max_bits;
                 }
@@ -414,7 +415,8 @@ fn typeCreate(group: *PeripheralGroup, default_name: []const u8, default_desc: [
                 if (dt.size_bits == 0) {
                     var bytes: u32 = 0;
                     for (dt.kind.structure) |f| {
-                        bytes += (group.data_types.items[f.data_type].size_bits + 7) / 8;
+                        const dt_bytes = (group.data_types.items[f.data_type].size_bits + 7) / 8;
+                        bytes = @max(bytes, f.offset_bytes + dt_bytes);
                     }
                     dt.size_bits = bytes * 8;
                 }
@@ -424,7 +426,8 @@ fn typeCreate(group: *PeripheralGroup, default_name: []const u8, default_desc: [
                 if (dt.size_bits == 0) {
                     var bits: u32 = 0;
                     for (dt.kind.bitpack) |f| {
-                        bits += group.data_types.items[f.data_type].size_bits;
+                        const dt_bits = group.data_types.items[f.data_type].size_bits;
+                        bits = @max(bits, f.offset_bits + dt_bits);
                     }
                     dt.size_bits = bits;
                 }
