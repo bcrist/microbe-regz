@@ -171,7 +171,7 @@ fn writeDataTypeImpl(group: PeripheralGroup, data_type: DataType, reg_types_pref
             try writeDataTypeRef(group, group.data_types.items[info.data_type], reg_types_prefix, import_prefix, writer);
         },
         .alternative => |fields| {
-            try writer.writeAll("union {\n");
+            try writer.writeAll("extern union {\n");
             for (fields) |field| {
                 try writeComment(field.description, writer);
                 try writer.print("{s}: ", .{ std.zig.fmtId(field.name) });
