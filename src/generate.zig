@@ -79,7 +79,8 @@ pub fn writeRegTypes(db: Database, writer: anytype) !void {
             continue;
         }
 
-        try writer.print("{s}: Handler = unhandled,\n", .{
+        try writer.print("{s}: Handler = unhandled(.{s}),\n", .{
+            std.zig.fmtId(interrupt.name),
             std.zig.fmtId(interrupt.name),
         });
 
