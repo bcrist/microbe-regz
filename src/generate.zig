@@ -140,8 +140,9 @@ fn writeDataTypeImpl(group: PeripheralGroup, data_type: DataType, reg_types_pref
         .boolean => try writer.writeAll("bool"),
         .anyopaque => try writer.writeAll("anyopaque"),
         .external => |info| {
-            if (!std.mem.endsWith(u8, info.import, ".zig")) {
-                try writer.print("@import(\"{s}\")", .{
+            if (std.mem.endsWith(u8, info.import, ".zig")) {
+                try writer.print("@import(\"{s}{s}\")", .{
+                    std.fmt.fmtSliceEscapeUpper(import_prefix),
                     std.fmt.fmtSliceEscapeUpper(info.import),
                 });
             } else if (std.mem.startsWith(u8, info.import, "microbe.")) {
@@ -156,9 +157,20 @@ fn writeDataTypeImpl(group: PeripheralGroup, data_type: DataType, reg_types_pref
                 while (iter.next()) |tok| {
                     try writer.print(".{s}", .{ std.zig.fmtId(tok) });
                 }
+            } else if (std.mem.indexOfScalar(u8, info.import, '.')) |dot| {
+                try writer.print("@import(\"{s}\")", .{
+                    std.fmt.fmtSliceEscapeUpper(info.import[0..dot]),
+                });
+                var iter = std.mem.tokenizeScalar(u8, info.import[dot + 1 ..], '.');
+                while (iter.next()) |tok| {
+                    try writer.print(".{s}", .{ std.zig.fmtId(tok) });
+                }
+            } else if (std.mem.eql(u8, info.import, "microbe")) {
+                try writer.writeAll("microbe");
+            } else if (std.mem.eql(u8, info.import, "chip")) {
+                try writer.writeAll("chip");
             } else {
-                try writer.print("@import(\"{s}{s}\")", .{
-                    std.fmt.fmtSliceEscapeUpper(import_prefix),
+                try writer.print("@import(\"{s}\")", .{
                     std.fmt.fmtSliceEscapeUpper(info.import),
                 });
             }
