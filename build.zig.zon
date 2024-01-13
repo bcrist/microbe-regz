@@ -1,10 +1,12 @@
 .{
     .name = "microbe-rpi",
     .version = "0.0.0",
+    .minimum_zig_version = "0.12.0-dev.2063+804cee3b9",
+    .paths = .{""},
     .dependencies = .{
         .@"Zig-SX" = .{
-            .url = "https://github.com/bcrist/Zig-SX/archive/0198004c271f95efb93ec5a75d9fa6d50f17a75d.tar.gz",
-            .hash = "1220257e39632182a45cc15f5280b19f904f342a3f11675206dc1794c0ca0a85ee6d",
+            .url = "https://github.com/bcrist/Zig-SX/archive/0b1a65dab2f87cf5fbbb9e1738d7b19ff0c5707f.tar.gz",
+            .hash = "1220457c06c728a76d4ee06c44a5e1973beb53081d96f92f167a072f9069e9619042",
         },
     },
 }

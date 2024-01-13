@@ -1,18 +1,12 @@
-const std = @import("std");
-const Database = @import("Database.zig");
-const PeripheralGroup = @import("PeripheralGroup.zig");
-
-const DataType = @This();
-
-pub const ID = u32;
-
 name: []const u8 = "",
 fallback_name: []const u8 = "",
 description: []const u8 = "",
 size_bits: u32,
 kind: Kind,
-inline_mode: InlineMode = .auto,
+inline_mode: Inline_Mode = .auto,
 ref_count: u32 = 0,
+
+pub const ID = u32;
 
 pub const Kind = union(enum) {
     unsigned,
@@ -30,66 +24,66 @@ pub const Kind = union(enum) {
     },
     register: struct {
         data_type: ID,
-        access: AccessPolicy,
+        access: Access_Policy,
     },
     collection: struct {
         data_type: ID,
         count: u32,
     },
-    alternative: []const UnionField,
-    structure: []const StructField,
-    bitpack: []const PackedField,
-    enumeration: []const EnumField,
+    alternative: []const Union_Field,
+    structure: []const Struct_Field,
+    bitpack: []const Packed_Field,
+    enumeration: []const Enum_Field,
 };
 
-pub const InlineMode = enum { auto, always, never };
-pub const AccessPolicy = enum { rw, r, w };
+pub const Inline_Mode = enum { auto, always, never };
+pub const Access_Policy = enum { rw, r, w };
 
-pub const UnionField = struct {
+pub const Union_Field = struct {
     name: []const u8,
     description: []const u8 = "",
     data_type: ID,
 };
 
-pub const StructField = struct {
+pub const Struct_Field = struct {
     name: []const u8,
     description: []const u8 = "",
     offset_bytes: u32,
     data_type: ID,
     default_value: u64,
 
-    pub fn lessThan(_: void, a: StructField, b: StructField) bool {
+    pub fn less_than(_: void, a: Struct_Field, b: Struct_Field) bool {
         return a.offset_bytes < b.offset_bytes;
     }
 };
 
-pub const PackedField = struct {
+pub const Packed_Field = struct {
     name: []const u8,
     description: []const u8 = "",
     offset_bits: u32,
     data_type: ID,
     default_value: u64,
 
-    pub fn lessThan(_: void, a: PackedField, b: PackedField) bool {
+    pub fn less_than(_: void, a: Packed_Field, b: Packed_Field) bool {
         return a.offset_bits < b.offset_bits;
     }
 };
 
-pub const EnumField = struct {
+pub const Enum_Field = struct {
     name: []const u8,
     description: []const u8 = "",
     value: u32,
 
-    pub fn lessThan(_: void, a: EnumField, b: EnumField) bool {
+    pub fn less_than(_: void, a: Enum_Field, b: Enum_Field) bool {
         return a.value < b.value;
     }
 };
 
-pub fn zigName(self: *const DataType) []const u8 {
+pub fn zig_name(self: *const Data_Type) []const u8 {
     return if (self.name.len > 0) self.name else self.fallback_name;
 }
 
-pub fn isPackable(self: *DataType) bool {
+pub fn is_packable(self: *Data_Type) bool {
     return switch (self.kind) {
         .unsigned,
         .signed,
@@ -107,8 +101,8 @@ pub fn isPackable(self: *DataType) bool {
     };
 }
 
-pub fn shouldInline(self: DataType) bool {
-    if (self.zigName().len == 0) {
+pub fn should_inline(self: Data_Type) bool {
+    if (self.zig_name().len == 0) {
         return true;
     }
     return switch (self.inline_mode) {
@@ -118,57 +112,57 @@ pub fn shouldInline(self: DataType) bool {
     };
 }
 
-pub fn addRef(self: *DataType, group: *PeripheralGroup) void {
+pub fn add_ref(self: *Data_Type, group: *Peripheral_Group) void {
     if (self.ref_count == 0 or self.inline_mode == .always) switch (self.kind) {
         .unsigned, .signed, .boolean, .anyopaque, .enumeration, .external => {},
         .pointer => |info| {
-            group.data_types.items[info.data_type].addRef(group);
+            group.data_types.items[info.data_type].add_ref(group);
         },
         .register => |info| {
-            group.data_types.items[info.data_type].addRef(group);
+            group.data_types.items[info.data_type].add_ref(group);
         },
         .collection => |info| {
-            group.data_types.items[info.data_type].addRef(group);
+            group.data_types.items[info.data_type].add_ref(group);
         },
         .alternative => |fields| for (fields) |field| {
-            group.data_types.items[field.data_type].addRef(group);
+            group.data_types.items[field.data_type].add_ref(group);
         },
         .structure => |fields| for (fields) |field| {
-            group.data_types.items[field.data_type].addRef(group);
+            group.data_types.items[field.data_type].add_ref(group);
         },
         .bitpack => |fields| for (fields) |field| {
-            group.data_types.items[field.data_type].addRef(group);
+            group.data_types.items[field.data_type].add_ref(group);
         },
     };
     self.ref_count += 1;
 }
 
-pub const DedupContext = struct {
-    group: *const PeripheralGroup,
+pub const Dedup_Context = struct {
+    group: *const Peripheral_Group,
 
-    pub fn hash(ctx: DedupContext, a: DataType) u64 {
-        return DataType.hash(a, ctx.group.*);
+    pub fn hash(ctx: Dedup_Context, a: Data_Type) u64 {
+        return Data_Type.hash(a, ctx.group.*);
     }
-    pub fn eql(ctx: DedupContext, a: DataType, b: DataType) bool {
-        return DataType.eql(a, ctx.group.*, b, ctx.group.*);
+    pub fn eql(ctx: Dedup_Context, a: Data_Type, b: Data_Type) bool {
+        return Data_Type.eql(a, ctx.group.*, b, ctx.group.*);
     }
 };
-pub const WithPeripheralGroup = struct {
-    group: *const PeripheralGroup,
-    data_type: *const DataType,
+pub const With_Peripheral_Group = struct {
+    group: *const Peripheral_Group,
+    data_type: *const Data_Type,
 };
-pub const AdaptedDedupContext = struct {
-    group: *const PeripheralGroup,
+pub const Adapted_Dedup_Context = struct {
+    group: *const Peripheral_Group,
 
-    pub fn hash(_: AdaptedDedupContext, a: WithPeripheralGroup) u64 {
-        return DataType.hash(a.data_type.*, a.group.*);
+    pub fn hash(_: Adapted_Dedup_Context, a: With_Peripheral_Group) u64 {
+        return Data_Type.hash(a.data_type.*, a.group.*);
     }
-    pub fn eql(ctx: AdaptedDedupContext, a: WithPeripheralGroup, b: DataType) bool {
-        return DataType.eql(a.data_type.*, a.group.*, b, ctx.group.*);
+    pub fn eql(ctx: Adapted_Dedup_Context, a: With_Peripheral_Group, b: Data_Type) bool {
+        return Data_Type.eql(a.data_type.*, a.group.*, b, ctx.group.*);
     }
 };
 
-fn hash(self: DataType, group: PeripheralGroup) u64 {
+fn hash(self: Data_Type, group: Peripheral_Group) u64 {
     var h = std.hash.Wyhash.init(0);
     h.update(self.name);
     // fallback names are ignored.
@@ -257,7 +251,7 @@ fn hash(self: DataType, group: PeripheralGroup) u64 {
 
     return h.final();
 }
-fn eql(a: DataType, a_src: PeripheralGroup, b: DataType, b_src: PeripheralGroup) bool {
+fn eql(a: Data_Type, a_src: Peripheral_Group, b: Data_Type, b_src: Peripheral_Group) bool {
     if (a.size_bits != b.size_bits) return false;
     if (a.inline_mode != b.inline_mode) return false;
     if (!std.mem.eql(u8, a.name, b.name)) return false;
@@ -347,3 +341,8 @@ fn eql(a: DataType, a_src: PeripheralGroup, b: DataType, b_src: PeripheralGroup)
     }
     return true;
 }
+
+const Data_Type = @This();
+const Database = @import("Database.zig");
+const Peripheral_Group = @import("Peripheral_Group.zig");
+const std = @import("std");

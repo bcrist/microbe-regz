@@ -1,26 +1,18 @@
-const std = @import("std");
-const Interrupt = @import("Interrupt.zig");
-const Peripheral = @import("Peripheral.zig");
-const PeripheralGroup = @import("PeripheralGroup.zig");
-const DataType = @import("DataType.zig");
-
-const Database = @This();
-
 arena: std.mem.Allocator,
 gpa: std.mem.Allocator,
 interrupts: std.ArrayListUnmanaged(Interrupt) = .{},
-groups: std.ArrayListUnmanaged(PeripheralGroup) = .{},
+groups: std.ArrayListUnmanaged(Peripheral_Group) = .{},
 
-pub fn findPeripheralGroup(self: *Database, name: []const u8) !*PeripheralGroup {
+pub fn find_peripheral_group(self: *Database, name: []const u8) !*Peripheral_Group {
     for (self.groups.items) |*group| {
         if (std.mem.eql(u8, group.name, name)) {
             return group;
         }
     }
-    return error.PeripheralGroupMissing;
+    return error.Peripheral_Group_Missing;
 }
 
-pub fn findOrCreatePeripheralGroup(self: *Database, name: []const u8) !*PeripheralGroup {
+pub fn find_or_create_peripheral_group(self: *Database, name: []const u8) !*Peripheral_Group {
     for (self.groups.items) |*group| {
         if (std.mem.eql(u8, group.name, name)) {
             return group;
@@ -37,10 +29,10 @@ pub fn findOrCreatePeripheralGroup(self: *Database, name: []const u8) !*Peripher
     return group;
 }
 
-pub fn createNvic(self: *Database) !void {
-    const group = try self.findOrCreatePeripheralGroup("cortex");
+pub fn create_nvic(self: *Database) !void {
+    const group = try self.find_or_create_peripheral_group("cortex");
 
-    var packed_fields = std.ArrayList(DataType.PackedField).init(self.gpa);
+    var packed_fields = std.ArrayList(Data_Type.Packed_Field).init(self.gpa);
     defer packed_fields.deinit();
 
     for (self.interrupts.items) |interrupt| {
@@ -48,24 +40,24 @@ pub fn createNvic(self: *Database) !void {
         try packed_fields.append(.{
             .name = interrupt.name,
             .offset_bits = @intCast(interrupt.index),
-            .data_type = try group.getOrCreateBool(),
+            .data_type = try group.get_or_create_bool(),
             .default_value = 0,
         });
     }
 
-    const interrupt_bitmap = try group.getOrCreateType(.{
-        .name = "InterruptBitmap",
+    const interrupt_bitmap = try group.get_or_create_type(.{
+        .name = "Interrupt_Bitmap",
         .size_bits = 32,
         .kind = .{ .bitpack = packed_fields.items },
     }, .{ .dupe_strings = false });
 
-    const interrupt_bitmap_register = try group.getOrCreateRegisterType(interrupt_bitmap, .rw);
-    const u8_type = try group.getOrCreateUnsigned(8);
+    const interrupt_bitmap_register = try group.get_or_create_register_type(interrupt_bitmap, .rw);
+    const u8_type = try group.get_or_create_unsigned(8);
 
-    var ipr_packed_fields = std.ArrayList(DataType.PackedField).init(self.gpa);
+    var ipr_packed_fields = std.ArrayList(Data_Type.Packed_Field).init(self.gpa);
     defer ipr_packed_fields.deinit();
 
-    var ipr: [8]DataType.StructField = undefined;
+    var ipr: [8]Data_Type.Struct_Field = undefined;
     for (&ipr, 0..) |*reg, n| {
         ipr_packed_fields.clearRetainingCapacity();
 
@@ -81,7 +73,7 @@ pub fn createNvic(self: *Database) !void {
             });
         }
 
-        const ipr_packed_type = try group.getOrCreateType(.{
+        const ipr_packed_type = try group.get_or_create_type(.{
             .size_bits = 32,
             .kind = .{ .bitpack = ipr_packed_fields.items },
         }, .{});
@@ -90,11 +82,11 @@ pub fn createNvic(self: *Database) !void {
             .name = try std.fmt.allocPrint(self.arena, "interrupt_priority_{}", .{ n }),
             .offset_bytes = @intCast(0x400 + 4 * n),
             .default_value = 0,
-            .data_type = try group.getOrCreateRegisterType(ipr_packed_type, .rw),
+            .data_type = try group.get_or_create_register_type(ipr_packed_type, .rw),
         };
     }
 
-    const nvic_data_type = try group.getOrCreateType(.{
+    const nvic_data_type = try group.get_or_create_type(.{
         .name = "NVIC",
         .size_bits = 0,
         .kind = .{ .structure = &.{
@@ -137,26 +129,33 @@ pub fn createNvic(self: *Database) !void {
         }},
     }, .{ .dupe_strings = false });
 
-    _ = try group.createPeripheral("NVIC", 0xE000E100, nvic_data_type);
+    _ = try group.create_peripheral("NVIC", 0xE000E100, nvic_data_type);
 }
 
 pub fn sort(self: *Database) void {
-    std.sort.insertion(Interrupt, self.interrupts.items, {}, Interrupt.lessThan);
-    std.sort.insertion(PeripheralGroup, self.groups.items, {}, PeripheralGroup.lessThan);
+    std.sort.insertion(Interrupt, self.interrupts.items, {}, Interrupt.less_than);
+    std.sort.insertion(Peripheral_Group, self.groups.items, {}, Peripheral_Group.less_than);
 
     for (self.groups.items) |group| {
-        std.sort.insertion(Peripheral, group.peripherals.items, {}, Peripheral.lessThan);
+        std.sort.insertion(Peripheral, group.peripherals.items, {}, Peripheral.less_than);
     }
 }
 
-pub fn computeRefCounts(self: *Database) void {
+pub fn compute_ref_counts(self: *Database) void {
     for (self.groups.items) |*group| {
-        group.computeRefCounts();
+        group.compute_ref_counts();
     }
 }
 
-pub fn assignNames(self: *Database) !void {
+pub fn assign_names(self: *Database) !void {
     for (self.groups.items) |*group| {
-        try group.assignNames();
+        try group.assign_names();
     }
 }
+
+const Database = @This();
+const Interrupt = @import("Interrupt.zig");
+const Peripheral = @import("Peripheral.zig");
+const Peripheral_Group = @import("Peripheral_Group.zig");
+const Data_Type = @import("Data_Type.zig");
+const std = @import("std");

@@ -1,8 +1,7 @@
 const std = @import("std");
 
 pub fn build(b: *std.Build) void {
-    const zig_sx_dep = b.dependency("Zig-SX", .{});
-    const sx_reader = zig_sx_dep.module("sx-reader");
+    const sx = b.dependency("Zig-SX", .{}).module("sx");
 
     const exe = b.addExecutable(.{
         .name = "microbe-regz",
@@ -10,6 +9,6 @@ pub fn build(b: *std.Build) void {
         .target = b.standardTargetOptions(.{}),
         .optimize = b.standardOptimizeOption(.{}),
     });
-    exe.addModule("sx-reader", sx_reader);
+    exe.root_module.addImport("sx", sx);
     b.installArtifact(exe);
 }

@@ -1,32 +1,25 @@
-const std = @import("std");
-const DataType = @import("DataType.zig");
-const Peripheral = @import("Peripheral.zig");
-const PeripheralGroup = @This();
-
-const load_factor = std.hash_map.default_max_load_percentage;
-
 arena: std.mem.Allocator,
 gpa: std.mem.Allocator,
 name: []const u8,
 description: []const u8 = "",
 separate_file: bool = true,
 peripherals: std.ArrayListUnmanaged(Peripheral) = .{},
-data_types: std.ArrayListUnmanaged(DataType) = .{},
-data_type_dedup: std.HashMapUnmanaged(DataType, DataType.ID, DataType.DedupContext, load_factor) = .{},
-data_type_lookup: std.StringHashMapUnmanaged(DataType.ID) = .{},
+data_types: std.ArrayListUnmanaged(Data_Type) = .{},
+data_type_dedup: std.HashMapUnmanaged(Data_Type, Data_Type.ID, Data_Type.Dedup_Context, load_factor) = .{},
+data_type_lookup: std.StringHashMapUnmanaged(Data_Type.ID) = .{},
 
-pub fn deinit(self: *PeripheralGroup) void {
+pub fn deinit(self: *Peripheral_Group) void {
     self.peripherals.deinit(self.gpa);
     self.data_types.deinit(self.gpa);
     self.data_type_dedup.deinit(self.gpa);
     self.data_type_lookup.deinit(self.gpa);
 }
 
-pub fn createPeripheral(
-    self: *PeripheralGroup,
+pub fn create_peripheral(
+    self: *Peripheral_Group,
     name: []const u8,
     base_address: u64,
-    data_type: DataType.ID,
+    data_type: Data_Type.ID,
 ) !*Peripheral {
     try self.peripherals.append(self.gpa, .{
         .name = name,
@@ -36,16 +29,16 @@ pub fn createPeripheral(
     return &self.peripherals.items[self.peripherals.items.len - 1];
 }
 
-pub fn clonePeripheral(
-    self: *PeripheralGroup,
-    src_group: *const PeripheralGroup,
+pub fn clone_peripheral(
+    self: *Peripheral_Group,
+    src_group: *const Peripheral_Group,
     src: Peripheral,
 ) !*Peripheral {
     try self.peripherals.append(self.gpa, .{
         .name = src.name,
         .description = src.description,
         .base_address = src.base_address,
-        .data_type = try self.getOrCreateType(src_group.data_types.items[src.data_type], .{
+        .data_type = try self.get_or_create_type(src_group.data_types.items[src.data_type], .{
             .dupe_strings = false,
             .src_group = src_group,
         }),
@@ -54,20 +47,20 @@ pub fn clonePeripheral(
     return &self.peripherals.items[self.peripherals.items.len - 1];
 }
 
-pub const GetOrCreateTypeOptions = struct {
+pub const Get_Or_Create_Type_Options = struct {
     dupe_strings: bool = true,
-    src_group: ?*const PeripheralGroup = null,
+    src_group: ?*const Peripheral_Group = null,
 };
-pub fn getOrCreateType(self: *PeripheralGroup, dt: DataType, options: GetOrCreateTypeOptions) !DataType.ID {
-    const key = DataType.WithPeripheralGroup{
+pub fn get_or_create_type(self: *Peripheral_Group, dt: Data_Type, options: Get_Or_Create_Type_Options) !Data_Type.ID {
+    const key = Data_Type.With_Peripheral_Group{
         .group = options.src_group orelse self,
         .data_type = &dt,
     };
 
-    if (self.data_type_dedup.getAdapted(key, DataType.AdaptedDedupContext{ .group = self })) |id| {
+    if (self.data_type_dedup.getAdapted(key, Data_Type.Adapted_Dedup_Context{ .group = self })) |id| {
         if (dt.fallback_name.len > 0) {
             const existing_dt = &self.data_types.items[id];
-            existing_dt.fallback_name = try self.updateFallbackName(existing_dt.fallback_name, dt.fallback_name, options.dupe_strings);
+            existing_dt.fallback_name = try self.update_fallback_name(existing_dt.fallback_name, dt.fallback_name, options.dupe_strings);
         }
         return id;
     }
@@ -75,28 +68,28 @@ pub fn getOrCreateType(self: *PeripheralGroup, dt: DataType, options: GetOrCreat
     if (dt.name.len > 0) {
         if (self.data_type_lookup.get(dt.name)) |_| {
             std.log.err("Type '{s}' already exists!", .{ std.fmt.fmtSliceEscapeLower(dt.name) });
-            return error.NamedTypeCollision;
+            return error.Named_Type_Collision;
         }
     }
 
     var copy = dt;
 
     if (options.dupe_strings) {
-        copy.name = try self.maybeDupe(copy.name);
-        copy.fallback_name = try self.maybeDupe(copy.fallback_name);
-        copy.description = try self.maybeDupe(copy.description);
+        copy.name = try self.maybe_dupe(copy.name);
+        copy.fallback_name = try self.maybe_dupe(copy.fallback_name);
+        copy.description = try self.maybe_dupe(copy.description);
     }
 
     copy.kind = switch (dt.kind) {
         .unsigned, .signed, .boolean, .anyopaque => dt.kind,
         .external => |info| .{ .external = .{
-            .import = if (options.dupe_strings) try self.maybeDupe(info.import) else info.import,
+            .import = if (options.dupe_strings) try self.maybe_dupe(info.import) else info.import,
             .from_int = if (info.from_int) |from_int| blk: {
-                break :blk if (options.dupe_strings) try self.maybeDupe(from_int) else from_int;
+                break :blk if (options.dupe_strings) try self.maybe_dupe(from_int) else from_int;
             } else null,
         }},
         .pointer => |info| .{ .pointer = .{
-            .data_type = try self.getOrCreateType(key.group.data_types.items[info.data_type], .{
+            .data_type = try self.get_or_create_type(key.group.data_types.items[info.data_type], .{
                 .dupe_strings = false,
                 .src_group = key.group,
             }),
@@ -104,7 +97,7 @@ pub fn getOrCreateType(self: *PeripheralGroup, dt: DataType, options: GetOrCreat
             .allow_zero = info.allow_zero,
         }},
         .register => |info| .{ .register = .{
-            .data_type = try self.getOrCreateType(key.group.data_types.items[info.data_type], .{
+            .data_type = try self.get_or_create_type(key.group.data_types.items[info.data_type], .{
                 .dupe_strings = false,
                 .src_group = key.group,
             }),
@@ -113,19 +106,19 @@ pub fn getOrCreateType(self: *PeripheralGroup, dt: DataType, options: GetOrCreat
         .collection => |info| blk: {
             break :blk .{ .collection = .{
                 .count = info.count,
-                .data_type = try self.getOrCreateType(key.group.data_types.items[info.data_type], .{
+                .data_type = try self.get_or_create_type(key.group.data_types.items[info.data_type], .{
                     .dupe_strings = false,
                     .src_group = key.group,
                 }),
             }};
         },
         .alternative => |src_fields| blk: {
-            var fields = try self.arena.alloc(DataType.UnionField, src_fields.len);
+            const fields = try self.arena.alloc(Data_Type.Union_Field, src_fields.len);
             for (src_fields, fields) |field, *dest| {
                 dest.* = .{
-                    .name = if (options.dupe_strings) try self.maybeDupe(field.name) else field.name,
-                    .description = if (options.dupe_strings) try self.maybeDupe(field.description) else field.description,
-                    .data_type = try self.getOrCreateType(key.group.data_types.items[field.data_type], .{
+                    .name = if (options.dupe_strings) try self.maybe_dupe(field.name) else field.name,
+                    .description = if (options.dupe_strings) try self.maybe_dupe(field.description) else field.description,
+                    .data_type = try self.get_or_create_type(key.group.data_types.items[field.data_type], .{
                         .dupe_strings = false,
                         .src_group = key.group,
                     }),
@@ -134,12 +127,12 @@ pub fn getOrCreateType(self: *PeripheralGroup, dt: DataType, options: GetOrCreat
             break :blk .{ .alternative = fields };
         },
         .structure => |src_fields| blk: {
-            var fields = try self.arena.alloc(DataType.StructField, src_fields.len);
+            const fields = try self.arena.alloc(Data_Type.Struct_Field, src_fields.len);
             for (src_fields, fields) |field, *dest| {
                 dest.* = .{
-                    .name = if (options.dupe_strings) try self.maybeDupe(field.name) else field.name,
-                    .description = if (options.dupe_strings) try self.maybeDupe(field.description) else field.description,
-                    .data_type = try self.getOrCreateType(key.group.data_types.items[field.data_type], .{
+                    .name = if (options.dupe_strings) try self.maybe_dupe(field.name) else field.name,
+                    .description = if (options.dupe_strings) try self.maybe_dupe(field.description) else field.description,
+                    .data_type = try self.get_or_create_type(key.group.data_types.items[field.data_type], .{
                         .dupe_strings = false,
                         .src_group = key.group,
                     }),
@@ -147,16 +140,16 @@ pub fn getOrCreateType(self: *PeripheralGroup, dt: DataType, options: GetOrCreat
                     .default_value = field.default_value,
                 };
             }
-            std.sort.insertion(DataType.StructField, fields, {}, DataType.StructField.lessThan);
+            std.sort.insertion(Data_Type.Struct_Field, fields, {}, Data_Type.Struct_Field.less_than);
             break :blk .{ .structure = fields };
         },
         .bitpack => |src_fields| blk: {
-            var fields = try self.arena.alloc(DataType.PackedField, src_fields.len);
+            const fields = try self.arena.alloc(Data_Type.Packed_Field, src_fields.len);
             for (src_fields, fields) |field, *dest| {
                 dest.* = .{
-                    .name = if (options.dupe_strings) try self.maybeDupe(field.name) else field.name,
-                    .description = if (options.dupe_strings) try self.maybeDupe(field.description) else field.description,
-                    .data_type = try self.getOrCreateType(key.group.data_types.items[field.data_type], .{
+                    .name = if (options.dupe_strings) try self.maybe_dupe(field.name) else field.name,
+                    .description = if (options.dupe_strings) try self.maybe_dupe(field.description) else field.description,
+                    .data_type = try self.get_or_create_type(key.group.data_types.items[field.data_type], .{
                         .dupe_strings = false,
                         .src_group = key.group,
                     }),
@@ -164,24 +157,24 @@ pub fn getOrCreateType(self: *PeripheralGroup, dt: DataType, options: GetOrCreat
                     .default_value = field.default_value,
                 };
             }
-            std.sort.insertion(DataType.PackedField, fields, {}, DataType.PackedField.lessThan);
+            std.sort.insertion(Data_Type.Packed_Field, fields, {}, Data_Type.Packed_Field.less_than);
             break :blk .{ .bitpack = fields };
         },
         .enumeration => |src_fields| blk: {
-            var fields = try self.arena.alloc(DataType.EnumField, src_fields.len);
+            const fields = try self.arena.alloc(Data_Type.Enum_Field, src_fields.len);
             for (src_fields, fields) |field, *dest| {
                 dest.* = .{
-                    .name = if (options.dupe_strings) try self.maybeDupe(field.name) else field.name,
-                    .description = if (options.dupe_strings) try self.maybeDupe(field.description) else field.description,
+                    .name = if (options.dupe_strings) try self.maybe_dupe(field.name) else field.name,
+                    .description = if (options.dupe_strings) try self.maybe_dupe(field.description) else field.description,
                     .value = field.value,
                 };
             }
-            std.sort.insertion(DataType.EnumField, fields, {}, DataType.EnumField.lessThan);
+            std.sort.insertion(Data_Type.Enum_Field, fields, {}, Data_Type.Enum_Field.less_than);
             break :blk .{ .enumeration = fields };
         },
     };
 
-    const id: DataType.ID = @intCast(self.data_types.items.len);
+    const id: Data_Type.ID = @intCast(self.data_types.items.len);
     const id2 = id;
     _ =id2;
     try self.data_types.append(self.gpa, copy);
@@ -192,7 +185,7 @@ pub fn getOrCreateType(self: *PeripheralGroup, dt: DataType, options: GetOrCreat
     return id;
 }
 
-pub fn maybeDupe(self: PeripheralGroup, maybe_str: ?[]const u8) ![]const u8 {
+pub fn maybe_dupe(self: Peripheral_Group, maybe_str: ?[]const u8) ![]const u8 {
     if (maybe_str) |str| {
         if (str.len > 0) {
             return self.arena.dupe(u8, str);
@@ -201,20 +194,20 @@ pub fn maybeDupe(self: PeripheralGroup, maybe_str: ?[]const u8) ![]const u8 {
     return "";
 }
 
-fn updateFallbackName(self: PeripheralGroup, existing: []const u8, new: []const u8, allow_dupe: bool) ![]const u8 {
-    if (existing.len == 0) return if (allow_dupe) self.maybeDupe(new) else new;
+fn update_fallback_name(self: Peripheral_Group, existing: []const u8, new: []const u8, allow_dupe: bool) ![]const u8 {
+    if (existing.len == 0) return if (allow_dupe) self.maybe_dupe(new) else new;
     if (std.mem.indexOfDiff(u8, existing, new)) |i| {
         if (i > 2) {
             return existing[0..i];
         }
-        return if (allow_dupe) self.maybeDupe(new) else new;
+        return if (allow_dupe) self.maybe_dupe(new) else new;
     }
     return existing;
 }
 
-pub fn getOrCreateRegisterType(self: *PeripheralGroup, inner: DataType.ID, access: DataType.AccessPolicy) !DataType.ID {
+pub fn get_or_create_register_type(self: *Peripheral_Group, inner: Data_Type.ID, access: Data_Type.Access_Policy) !Data_Type.ID {
     const size_bits = self.data_types.items[inner].size_bits;
-    return self.getOrCreateType(.{
+    return self.get_or_create_type(.{
         .name = "",
         .size_bits = size_bits,
         .kind = .{ .register = .{
@@ -225,9 +218,9 @@ pub fn getOrCreateRegisterType(self: *PeripheralGroup, inner: DataType.ID, acces
     }, .{ .dupe_strings = false });
 }
 
-pub fn getOrCreateArrayType(self: *PeripheralGroup, inner: DataType.ID, count: u32) !DataType.ID {
+pub fn get_or_create_array_type(self: *Peripheral_Group, inner: Data_Type.ID, count: u32) !Data_Type.ID {
     const size_bits = self.data_types.items[inner].size_bits * count;
-    return self.getOrCreateType(.{
+    return self.get_or_create_type(.{
         .name = "",
         .size_bits = size_bits,
         .kind = .{ .collection = .{
@@ -238,8 +231,8 @@ pub fn getOrCreateArrayType(self: *PeripheralGroup, inner: DataType.ID, count: u
     }, .{ .dupe_strings = false });
 }
 
-pub fn getOrCreatePointer(self: *PeripheralGroup, inner: DataType.ID, allow_zero: bool, constant: bool) !DataType.ID {
-    return self.getOrCreateType(.{
+pub fn get_or_create_pointer(self: *Peripheral_Group, inner: Data_Type.ID, allow_zero: bool, constant: bool) !Data_Type.ID {
+    return self.get_or_create_type(.{
         .name = "",
         .size_bits = 32,
         .kind = .{ .pointer = .{
@@ -251,9 +244,9 @@ pub fn getOrCreatePointer(self: *PeripheralGroup, inner: DataType.ID, allow_zero
     }, .{ .dupe_strings = false });
 }
 
-pub fn getOrCreateUnsigned(self: *PeripheralGroup, bits: u32) !DataType.ID {
+pub fn get_or_create_unsigned(self: *Peripheral_Group, bits: u32) !Data_Type.ID {
     var name_buf: [64]u8 = undefined;
-    return self.getOrCreateType(.{
+    return self.get_or_create_type(.{
         .name = try std.fmt.bufPrint(&name_buf, "u{}", .{ bits }),
         .size_bits = bits,
         .kind = .unsigned,
@@ -261,9 +254,9 @@ pub fn getOrCreateUnsigned(self: *PeripheralGroup, bits: u32) !DataType.ID {
     }, .{});
 }
 
-pub fn getOrCreateSigned(self: *PeripheralGroup, bits: u32) !DataType.ID {
+pub fn get_or_create_signed(self: *Peripheral_Group, bits: u32) !Data_Type.ID {
     var name_buf: [64]u8 = undefined;
-    return self.getOrCreateType(.{
+    return self.get_or_create_type(.{
         .name = try std.fmt.bufPrint(&name_buf, "i{}", .{ bits }),
         .size_bits = bits,
         .kind = .signed,
@@ -271,8 +264,8 @@ pub fn getOrCreateSigned(self: *PeripheralGroup, bits: u32) !DataType.ID {
     }, .{});
 }
 
-pub fn getOrCreateBool(self: *PeripheralGroup) !DataType.ID {
-    return self.getOrCreateType(.{
+pub fn get_or_create_bool(self: *Peripheral_Group) !Data_Type.ID {
+    return self.get_or_create_type(.{
         .name = "bool",
         .size_bits = 1,
         .kind = .boolean,
@@ -280,8 +273,8 @@ pub fn getOrCreateBool(self: *PeripheralGroup) !DataType.ID {
     }, .{ .dupe_strings = false });
 }
 
-pub fn getOrCreateAnyopaque(self: *PeripheralGroup) !DataType.ID {
-    return self.getOrCreateType(.{
+pub fn get_or_create_anyopaque(self: *Peripheral_Group) !Data_Type.ID {
+    return self.get_or_create_type(.{
         .name = "anyopaque",
         .size_bits = 0,
         .kind = .anyopaque,
@@ -289,8 +282,8 @@ pub fn getOrCreateAnyopaque(self: *PeripheralGroup) !DataType.ID {
     }, .{ .dupe_strings = false });
 }
 
-pub fn getOrCreateExternalType(self: *PeripheralGroup, name: []const u8, import: []const u8, size: u32) !DataType.ID {
-    return self.getOrCreateType(.{
+pub fn get_or_create_external_type(self: *Peripheral_Group, name: []const u8, import: []const u8, size: u32) !Data_Type.ID {
+    return self.get_or_create_type(.{
         .name = name,
         .size_bits = size,
         .kind = .{ .external = .{
@@ -300,23 +293,23 @@ pub fn getOrCreateExternalType(self: *PeripheralGroup, name: []const u8, import:
     }, .{});
 }
 
-pub fn findType(self: *PeripheralGroup, name: []const u8) !?DataType.ID {
+pub fn find_type(self: *Peripheral_Group, name: []const u8) !?Data_Type.ID {
     if (self.data_type_lookup.get(name)) |id| return id;
 
     if (std.mem.startsWith(u8, name, "u")) {
         if (std.fmt.parseInt(u32, name[1..], 10)) |bits| {
-            return try self.getOrCreateUnsigned(bits);
+            return try self.get_or_create_unsigned(bits);
         } else |_| {}
     }
 
     if (std.mem.startsWith(u8, name, "i")) {
         if (std.fmt.parseInt(u32, name[1..], 10)) |bits| {
-            return try self.getOrCreateSigned(bits);
+            return try self.get_or_create_signed(bits);
         } else |_| {}
     }
 
     if (std.mem.eql(u8, name, "bool")) {
-        return try self.getOrCreateBool();
+        return try self.get_or_create_bool();
     }
 
     if (std.mem.startsWith(u8, name, "*")) {
@@ -337,8 +330,8 @@ pub fn findType(self: *PeripheralGroup, name: []const u8) !?DataType.ID {
             constant = true;
         }
 
-        const base = (try self.findType(remaining)) orelse return null;
-        return try self.getOrCreatePointer(base, allow_zero, constant);
+        const base = (try self.find_type(remaining)) orelse return null;
+        return try self.get_or_create_pointer(base, allow_zero, constant);
     }
 
     if (std.mem.startsWith(u8, name, "[")) {
@@ -364,35 +357,35 @@ pub fn findType(self: *PeripheralGroup, name: []const u8) !?DataType.ID {
             remaining = remaining[1..];
         }
 
-        const base = (try self.findType(remaining)) orelse return null;
-        return try self.getOrCreateArrayType(base, count);
+        const base = (try self.find_type(remaining)) orelse return null;
+        return try self.get_or_create_array_type(base, count);
     }
 
     if (std.mem.eql(u8, name, "anyopaque")) {
-        return try self.getOrCreateAnyopaque();
+        return try self.get_or_create_anyopaque();
     }
 
     return null;
 }
 
-pub fn lessThan(_: void, a: PeripheralGroup, b: PeripheralGroup) bool {
+pub fn less_than(_: void, a: Peripheral_Group, b: Peripheral_Group) bool {
     return std.mem.lessThan(u8, a.name, b.name);
 }
 
-pub fn computeRefCounts(self: *PeripheralGroup) void {
+pub fn compute_ref_counts(self: *Peripheral_Group) void {
     // for (self.data_types.items) |*data_type| {
     //     data_type.ref_count = 0;
     // }
     for (self.peripherals.items) |peripheral| {
         if (peripheral.deleted) continue;
-        self.data_types.items[peripheral.data_type].addRef(self);
+        self.data_types.items[peripheral.data_type].add_ref(self);
         // "Top level" types used directly by peripherals should always be defined separately if possible.
         // Adding a second ref ensures that will happen unless the type is unnamed:
-        self.data_types.items[peripheral.data_type].addRef(self);
+        self.data_types.items[peripheral.data_type].add_ref(self);
     }
 }
 
-pub fn assignNames(self: *PeripheralGroup) !void {
+pub fn assign_names(self: *Peripheral_Group) !void {
     for (self.data_types.items, 0..) |*dt, id| {
         if (dt.inline_mode != .always and dt.ref_count > 1 and dt.name.len == 0 and dt.fallback_name.len > 0) {
             var new_name = dt.fallback_name;
@@ -411,3 +404,10 @@ pub fn assignNames(self: *PeripheralGroup) !void {
         }
     }
 }
+
+const load_factor = std.hash_map.default_max_load_percentage;
+
+const Peripheral_Group = @This();
+const Data_Type = @import("Data_Type.zig");
+const Peripheral = @import("Peripheral.zig");
+const std = @import("std");
